@@ -1,0 +1,30 @@
+RewriteEngine On
+
+# 1. Bloquear Listagem de Diretórios (Prevenção de vazamento de estrutura)
+Options -Indexes
+
+# 2. Bloquear Acesso Direto a Arquivos de Configuração, Bancos e Travas
+<FilesMatch "\.(sql|env|lock|log|bak|ini|sh|ps1)$">
+    Require all denied
+</FilesMatch>
+
+# 3. Bloquear Acesso Direto a Arquivos Específicos Sensíveis
+<Files "database.sql">
+    Require all denied
+</Files>
+<Files "install.lock">
+    Require all denied
+</Files>
+
+# 4. Proteger a pasta config e arquivos ocultos (.git, etc)
+RewriteRule ^config/ - [F,L]
+RewriteRule ^serverapi/ - [F,L]
+RewriteRule (^|/)\.(?!well-known) - [F,L]
+
+# 5. Cabeçalhos de Segurança HTTP Recomendados
+<IfModule mod_headers.c>
+    Header set X-Content-Type-Options "nosniff"
+    Header set X-Frame-Options "SAMEORIGIN"
+    Header set X-XSS-Protection "1; mode=block"
+</IfModule>
+

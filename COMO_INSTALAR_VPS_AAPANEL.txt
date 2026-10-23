@@ -1,0 +1,157 @@
+================================================================================
+GUIA COMPLETO DE INSTALACAO - AAPANEL + APACHE + NODE.JS + PM2
+================================================================================
+
+1. POR QUE PRECISA DO PROXY REVERSO?
+--------------------------------------------------------------------------------
+No seu servidor voce tem DOIS servicos rodando juntos:
+  a) APACHE (portas 80 e 443): roda o Painel PHP, login, pagamentos e cuida do SSL (HTTPS).
+  b) NODE.JS (porta 3000): roda o Gateway de IA (OpenAI/Claude) e WebSockets Realtime de voz.
+
+Sem o proxy, os clientes e ferramentas (VS Code, Claude CLI, site) teriam que
+acessar com a porta aberta exposta: http://seudominio.com:3000 (sem SSL / HTTP inseguro).
+Navegadores bloqueiam chamadas HTTP dentro de sites HTTPS (erro de Mixed Content).
+
+Com o PROXY REVERSO do Apache:
+  - Todo o trafego entra pela porta 443 padrao com SSL seguro (https:// ou wss://).
+  - O Apache encaminha as chamadas da API silenciosamente para o Node.js internamente.
+  - Voce nao precisa abrir a porta 3000 no firewall da VPS.
+
+
+================================================================================
+PASSO A PASSO DA INSTALACAO NO AAPANEL
+================================================================================
+
+ETAPA 1: PREPARAR O AAPANEL
+--------------------------------------------------------------------------------
+1. No menu lateral do aaPanel, va em "App Store".
+2. Certifique-se de que estao instalados:
+   - Apache 2.4+
+   - MySQL 5.7+ ou MariaDB 10.x+
+   - PHP 8.1 ou 8.2
+3. Em "PHP" -> clique em "Config" -> "Extensions" e instale:
+   - pdo_mysql
+   - curl
+   - fileinfo
+4. Na "App Store", procure e instale o "Node.js Version Manager":
+   - Dentro dele, selecione e instale o Node.js v20 (LTS).
+   - Va na aba "Module Manager" do Node.js e instale o pacote global: pm2
+
+
+ETAPA 2: ENVIAR OS ARQUIVOS PARA A VPS
+--------------------------------------------------------------------------------
+1. No seu computador, compacte os arquivos deste projeto em ZIP:
+   ATENCAO:
+   -> NAO envie a pasta "serverapi/node_modules" (ela sera gerada na VPS).
+   -> Se o arquivo "install.lock" existir na raiz, APAGUE-O antes de subir se
+      quiser rodar o instalador web (install.php) na VPS.
+
+2. No aaPanel, va em "Website" -> "Add site":
+   - Domain: seu dominio (ex: painel.seudominio.com ou seudominio.com)
+   - Database: crie um banco MySQL novo (ex: api_gateway) e guarde o usuario e senha.
+   - PHP Version: PHP 8.1 ou 8.2
+
+3. Va em "Files", acesse a pasta do site criada (/www/wwwroot/seudominio.com/):
+   - Apague os arquivos padrao (index.html, 404.html).
+   - Suba o seu arquivo .ZIP e extraia tudo ali dentro.
+
+
+ETAPA 3: INSTALAR DEPENDENCIAS DO NODE.JS E PERMISSOES
+--------------------------------------------------------------------------------
+Abra o "Terminal" do aaPanel (ou acesse por SSH no PuTTY/Terminal):
+
+1. Ajuste as permissoes dos arquivos para o usuario www do aaPanel:
+   chown -R www:www /www/wwwroot/seudominio.com
+   chmod -R 755 /www/wwwroot/seudominio.com
+   chmod -R 775 /www/wwwroot/seudominio.com/serverapi
+
+2. Instale as dependencias do Node.js:
+   cd /www/wwwroot/seudominio.com/serverapi
+   npm install --production
+
+3. Inicie o Gateway Node.js com o PM2 (configurado para usar ate 4GB de RAM):
+   pm2 start src/server.js --name "gateway-api" --node-args="--max-old-space-size=4096"
+   pm2 save
+   pm2 startup
+
+(Para verificar se o Node esta rodando, digite: pm2 status)
+
+
+ETAPA 4: GERAR CERTIFICADO SSL (HTTPS)
+--------------------------------------------------------------------------------
+1. No aaPanel, va em "Website" -> clique no seu site.
+2. Va na aba "SSL".
+3. Escolha "Let's Encrypt", marque seu dominio e clique em "Apply".
+4. Apos gerar com sucesso, ative a chave "Force HTTPS".
+
+
+ETAPA 5: CONFIGURAR O PROXY REVERSO NO APACHE
+--------------------------------------------------------------------------------
+No aaPanel, existem duas opcoes simples:
+
+OPCAO A: Subdominio exclusivo para a API (RECOMENDADA)
+Se você criou um subdominio separado (ex: api.seudominio.com):
+1. No aaPanel, crie o site "api.seudominio.com" e ative o SSL nele.
+2. Clique no site -> va na aba "Reverse Proxy" -> "Add reverse proxy":
+   - Proxy Name: gateway
+   - Target URL: http://127.0.0.1:3000
+   - Sent Domain: $host
+3. Clique em salvar. Pronto! O aaPanel ja faz todo o proxy e websocket para voce.
+
+OPCAO B: Tudo no mesmo dominio (ex: seudominio.com)
+Se quiser rodar o Painel e a API sob o mesmo endereço:
+1. No aaPanel, va em "Website" -> clique no seu site -> aba "Config".
+2. Role ate o bloco <VirtualHost *:443> e insira antes do </VirtualHost>:
+
+    # Suporte a WebSocket Realtime
+    RewriteEngine On
+    RewriteCond %{HTTP:Upgrade} =websocket [NC]
+    RewriteRule ^/v1/realtime(.*) ws://127.0.0.1:3000/v1/realtime$1 [P,L]
+
+    # Proxy para as rotas da API Node.js
+    ProxyPass /v1/ http://127.0.0.1:3000/v1/
+    ProxyPassReverse /v1/ http://127.0.0.1:3000/v1/
+
+    # Proxy para login OAuth do Google Antigravity
+    ProxyPass /auth/antigravity/ http://127.0.0.1:3000/auth/antigravity/
+    ProxyPassReverse /auth/antigravity/ http://127.0.0.1:3000/auth/antigravity/
+
+3. Salve o arquivo de configuracao. O Apache reiniciara automaticamente.
+
+
+ETAPA 6: CONCLUIR A INSTALACAO NO NAVEGADOR
+--------------------------------------------------------------------------------
+1. Abra no navegador: https://seudominio.com/install.php
+2. Preencha os dados do banco de dados MySQL criado no aaPanel:
+   - Host: 127.0.0.1
+   - Porta: 3306
+   - Banco: o nome do banco criado
+   - Usuario: o usuario criado
+   - Senha: a senha criada no aaPanel
+3. Defina os dados do Administrador (Nome, WhatsApp, E-mail e Senha).
+4. Informe a URL publica da API (ex: https://api.seudominio.com ou https://seudominio.com).
+5. Clique em "Concluir Instalacao".
+
+
+ETAPA 7: COMO MIGRAR SUAS CONTAS GOOGLE CONECTADAS (EXPORTAR / IMPORTAR)
+--------------------------------------------------------------------------------
+Você NÃO precisa reconectar as contas uma a uma na VPS!
+
+Método Direto pelo Painel:
+1. No seu localhost (http://localhost/painelapi/admin/accounts.php):
+   - No card superior direito (abaixo de "+ Conectar Conta Google"), clique no botão "Exportar".
+   - Um arquivo JSON com todas as contas e tokens de atualização será baixado.
+
+2. No painel da sua VPS (https://seudominio.com/admin/accounts.php):
+   - Clique no botão "Importar".
+   - Selecione o arquivo .JSON baixado (ou cole o conteúdo) e clique em "Importar Contas".
+   - Pronto! Todas as contas Google entrarão ativas e conectadas na VPS instantaneamente!
+
+Método Alternativo via Banco de Dados (phpMyAdmin / aaPanel):
+- Basta exportar as tabelas `antigravity_accounts` e `antigravity_model_quotas` do seu
+  MySQL local e importar no MySQL da VPS.
+
+================================================================================
+Pronto! Seu painel e o gateway de IA com Realtime estarao 100% operacionais na VPS.
+================================================================================
+
