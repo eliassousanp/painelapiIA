@@ -2,6 +2,11 @@
 node_modules/
 serverapi/node_modules/
 
+# Credentials and Local Config
+config/database.php
+serverapi/.env
+install.lock
+
 # WhatsApp session auth
 serverapi/auth_info_baileys/
 
