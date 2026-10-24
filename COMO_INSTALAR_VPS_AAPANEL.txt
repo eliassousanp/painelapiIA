@@ -112,6 +112,10 @@ Se quiser rodar o Painel e a API sob o mesmo endereço:
     ProxyPass /v1/ http://127.0.0.1:3000/v1/
     ProxyPassReverse /v1/ http://127.0.0.1:3000/v1/
 
+    # Proxy para MCP (Model Context Protocol / Claude Code)
+    ProxyPass /mcp/ http://127.0.0.1:3000/mcp/
+    ProxyPassReverse /mcp/ http://127.0.0.1:3000/mcp/
+
     # Proxy para login OAuth do Google Antigravity
     ProxyPass /auth/antigravity/ http://127.0.0.1:3000/auth/antigravity/
     ProxyPassReverse /auth/antigravity/ http://127.0.0.1:3000/auth/antigravity/

@@ -16,6 +16,7 @@ import crypto from 'crypto';
 import { startOAuthFlow, refreshAccessToken, exchangeOAuthCode, closeActiveAuthServer } from './oauth.js';
 import { onboardUser, fetchUserQuotas, generateContent, streamGenerateContent } from './antigravity.js';
 import { initRealtime, AVAILABLE_VOICES } from './realtime.js';
+import { initMcp } from './mcp.js';
 import {
   initWhatsAppBaileys,
   connectToWhatsApp,
@@ -2311,6 +2312,17 @@ initRealtime(httpServer, {
   sanitizeToolsForProvider
 });
 
+// Inicializar MCP Server Nativo (Model Context Protocol para Claude Code & Subagentes)
+initMcp(app, {
+  authenticateApiKey,
+  executeWithFallback,
+  executeWithFallbackStream,
+  executeExternalProvider,
+  resolveModelConfig,
+  logUsage,
+  pool
+});
+
 // Rotina em segundo plano: Sincronizacao periodica de cotas com o Google a cada 5 minutos
 setInterval(async () => {
   try {
@@ -2328,6 +2340,7 @@ httpServer.listen(PORT, () => {
   console.log(`⚡ Claude Code CLI:   ANTHROPIC_BASE_URL=http://localhost:${PORT}`);
   console.log(`💻 VS Code / Cline:    baseURL=http://localhost:${PORT}/v1`);
   console.log(`🎙️  Realtime WebSocket:  ws://localhost:${PORT}/v1/realtime`);
+  console.log(`🤖 Claude Code MCP:   claude mcp add --transport sse painel-subagente http://localhost:${PORT}/mcp/sse --header "Authorization: Bearer SUA_API_KEY"`);
   console.log(`=============================================================\n`);
 });
 
