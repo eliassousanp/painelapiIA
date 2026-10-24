@@ -43,33 +43,10 @@ export function initMcp(app, gateway) {
     return await authenticateApiKey(clientApiKey);
   }
 
-  // -------------------------------------------------------------
-  // ROTA INFORMATIVA / STATUS
-  // -------------------------------------------------------------
-  app.get(['/mcp', '/v1/mcp'], (req, res) => {
-    const host = req.headers['x-forwarded-host'] || req.get('host') || 'localhost:3000';
-    const protocol = req.headers['x-forwarded-proto'] || req.protocol || 'http';
-    const baseUrl = `${protocol}://${host}`;
 
-    res.json({
-      status: 'online',
-      service: 'Antigravity Gateway MCP Server',
-      version: '1.0.0',
-      transport: 'SSE (Server-Sent Events)',
-      endpoints: {
-        sse: `${baseUrl}/mcp/sse`,
-        messages: `${baseUrl}/mcp/messages`
-      },
-      instructions: {
-        claude_code_setup: `claude mcp add --transport sse painel-subagente ${baseUrl}/mcp/sse --header "Authorization: Bearer SUA_API_KEY"`
-      }
-    });
-  });
 
-  // -------------------------------------------------------------
-  // ROTA SSE: CONEXÃO DO CLIENTE MCP (ex: Claude Code)
-  // -------------------------------------------------------------
-  app.get(['/mcp/sse', '/v1/mcp/sse'], async (req, res) => {
+  // Handler principal de SSE do MCP
+  async function handleMcpSse(req, res) {
     // Garantir CORS total
     res.setHeader('Access-Control-Allow-Origin', '*');
     res.setHeader('Access-Control-Allow-Headers', '*');
@@ -277,6 +254,34 @@ export function initMcp(app, gateway) {
     // Conectar o servidor ao transporte e iniciar o streaming
     await server.connect(transport);
     await transport.start();
+  }
+
+  // Rota SSE explícita
+  app.get(['/mcp/sse', '/v1/mcp/sse'], handleMcpSse);
+
+  // Rota /mcp padrão direta (se tiver chave ou accept: event-stream conecta direto no SSE)
+  app.get(['/mcp', '/v1/mcp'], (req, res) => {
+    const hasAuth = req.headers['authorization'] || req.headers['x-api-key'] || req.query['apiKey'] || req.query['api_key'] || req.query['key'] || req.query['token'];
+    const isSse = (req.headers['accept'] || '').includes('text/event-stream');
+    if (hasAuth || isSse) {
+      return handleMcpSse(req, res);
+    }
+
+    const host = req.headers['x-forwarded-host'] || req.get('host') || 'localhost:3000';
+    const protocol = req.headers['x-forwarded-proto'] || req.protocol || 'http';
+    const baseUrl = `${protocol}://${host}`;
+
+    res.json({
+      status: 'online',
+      service: 'Antigravity Gateway MCP Server',
+      version: '1.0.0',
+      transport: 'SSE (Server-Sent Events)',
+      endpoints: {
+        mcp: `${baseUrl}/mcp`,
+        sse: `${baseUrl}/mcp/sse`,
+        messages: `${baseUrl}/mcp/messages`
+      }
+    });
   });
 
   // -------------------------------------------------------------
