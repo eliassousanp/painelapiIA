@@ -114,7 +114,16 @@ export function initMcp(app, gateway) {
       },
       async ({ prompt, modelo, system_prompt }) => {
         try {
-          const rawModel = modelo || 'claude-opus-4-6-thinking';
+          let rawModel = modelo;
+          if (!rawModel) {
+            try {
+              const [activeM] = await pool.query("SELECT model_key FROM models WHERE status = 'active' ORDER BY id ASC LIMIT 1");
+              if (activeM && activeM.length > 0) {
+                rawModel = activeM[0].model_key;
+              }
+            } catch (e) {}
+          }
+          if (!rawModel) rawModel = 'gemini-3.8-flash-medium';
           const incomingContents = [
             {
               role: 'user',

@@ -165,7 +165,7 @@ class AntigravityAccountPool {
               }
             }
           }
-        } catch (e) {}
+        } catch (e) { }
       }
 
       // Cálculo de pontuação de carga (menor é melhor)
@@ -253,7 +253,7 @@ class AntigravityAccountPool {
       try {
         const jsonMatch = err.message.match(/(\{[\s\S]*\})/);
         if (jsonMatch) errData = JSON.parse(jsonMatch[1]);
-      } catch (e) {}
+      } catch (e) { }
     }
 
     const details = Array.isArray(errData.error?.details) ? errData.error.details : [];
@@ -292,7 +292,7 @@ class AntigravityAccountPool {
             VALUES (?, ?, 0.00, ?, NOW())
             ON DUPLICATE KEY UPDATE percentage = 0.00, reset_time = VALUES(reset_time), updated_at = NOW()
           `, [accId, actualModel, meta.quotaResetTimeStamp ? new Date(meta.quotaResetTimeStamp) : null]);
-        } catch (e) {}
+        } catch (e) { }
 
       } catch (dbErr) {
         console.error('[Pool Manager] Erro ao gravar cota esgotada:', dbErr.message);
