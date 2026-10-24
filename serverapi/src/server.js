@@ -875,7 +875,7 @@ async function resolveModelConfig(requestedModel, incomingContents = []) {
     }
 
     const providerId = row ? row.provider_id : 2;
-    if (providerId === 2) {
+    if (providerId === 2 && !row.upstream_model) {
       chosenEngine = normalizeAntigravityModel(chosenEngine);
     }
 
