@@ -284,7 +284,7 @@ export function initMcp(app, gateway) {
   });
 
   // -------------------------------------------------------------
-  // ROTA POST: MENSAGENS E PROBE DO CLIENTE MCP (JSON-RPC)
+  // ROTA POST: MENSAGENS E PROTOCOLO MCP COMPLETO (HTTP + SSE)
   // -------------------------------------------------------------
   app.post(['/mcp', '/v1/mcp', '/mcp/messages', '/v1/mcp/messages', '/mcp/sse', '/v1/mcp/sse'], async (req, res) => {
     res.setHeader('Access-Control-Allow-Origin', '*');
@@ -292,24 +292,203 @@ export function initMcp(app, gateway) {
     res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
 
     const sessionId = req.query.sessionId;
-    if (!sessionId) {
-      // Probe do Claude Desktop ou handshake inicial
-      return res.status(200).json({ jsonrpc: '2.0', result: { status: 'ready', service: 'mcp' } });
+    if (sessionId) {
+      const session = activeSessions.get(sessionId);
+      if (!session) {
+        return res.status(404).send('Session not found or expired');
+      }
+
+      try {
+        await session.transport.handlePostMessage(req, res, req.body);
+      } catch (err) {
+        console.error('[MCP PostMessage Error]:', err.message);
+        if (!res.headersSent) {
+          res.status(500).send(`MCP message handling failed: ${err.message}`);
+        }
+      }
+      return;
     }
 
-    const session = activeSessions.get(sessionId);
-    if (!session) {
-      return res.status(404).send('Session not found or expired');
+    // Se NÃO tem sessionId: é um cliente MCP usando transporte HTTP Direto (Streamable HTTP / Claude Desktop)
+    const body = req.body || {};
+    const method = body.method;
+    const msgId = body.id ?? 1;
+
+    // 1. Handshake Initialize
+    if (method === 'initialize') {
+      return res.status(200).json({
+        jsonrpc: '2.0',
+        id: msgId,
+        result: {
+          protocolVersion: body.params?.protocolVersion || '2024-11-05',
+          capabilities: {
+            tools: { listChanged: true }
+          },
+          serverInfo: {
+            name: 'painel-subagentes',
+            version: '1.0.0'
+          }
+        }
+      });
     }
 
-    try {
-      await session.transport.handlePostMessage(req, res, req.body);
-    } catch (err) {
-      console.error('[MCP PostMessage Error]:', err.message);
-      if (!res.headersSent) {
-        res.status(500).send(`MCP message handling failed: ${err.message}`);
+    if (method === 'notifications/initialized') {
+      return res.status(200).json({ jsonrpc: '2.0', result: {} });
+    }
+
+    if (method === 'ping') {
+      return res.status(200).json({ jsonrpc: '2.0', id: msgId, result: {} });
+    }
+
+    // 2. Tools List
+    if (method === 'tools/list') {
+      try {
+        const [models] = await pool.query(
+          "SELECT model_key, name, multiplier FROM models WHERE status = 'active' ORDER BY name ASC"
+        );
+        const listStr = models.map(m => `- ${m.name} (ID: ${m.model_key})`).join(', ');
+
+        return res.status(200).json({
+          jsonrpc: '2.0',
+          id: msgId,
+          result: {
+            tools: [
+              {
+                name: 'executar_subagente',
+                description: 'Executa uma tarefa ou raciocínio complexo delegando para um subagente na API do Painel',
+                inputSchema: {
+                  type: 'object',
+                  properties: {
+                    prompt: { type: 'string', description: 'Instrução clara para o subagente executar' },
+                    modelo: { type: 'string', description: `Modelo da API. Ativos: ${listStr}` },
+                    system_prompt: { type: 'string', description: 'Instruções de sistema opcionais' }
+                  },
+                  required: ['prompt']
+                }
+              },
+              {
+                name: 'listar_modelos_api',
+                description: 'Lista os modelos de IA disponíveis no painel',
+                inputSchema: { type: 'object', properties: {} }
+              },
+              {
+                name: 'consultar_saldo_api',
+                description: 'Consulta o saldo de tokens e cotas disponíveis na sua conta do painel',
+                inputSchema: { type: 'object', properties: {} }
+              }
+            ]
+          }
+        });
+      } catch (err) {
+        return res.status(500).json({ jsonrpc: '2.0', id: msgId, error: { code: -32603, message: err.message } });
       }
     }
+
+    // 3. Tools Call
+    if (method === 'tools/call') {
+      let userKey;
+      try {
+        userKey = await extractAndAuth(req);
+      } catch (err) {
+        return res.status(401).json({ jsonrpc: '2.0', id: msgId, error: { code: -32000, message: err.message } });
+      }
+
+      const toolName = body.params?.name;
+      const args = body.params?.arguments || {};
+
+      if (toolName === 'consultar_saldo_api') {
+        const [rows] = await pool.query('SELECT balance_tokens, tokens_used FROM users WHERE id = ?', [userKey.user_id]);
+        const u = rows[0] || {};
+        return res.status(200).json({
+          jsonrpc: '2.0',
+          id: msgId,
+          result: {
+            content: [{
+              type: 'text',
+              text: `Saldo de Tokens: ${Number(u.balance_tokens || 0).toLocaleString('pt-BR')} | Tokens Utilizados: ${Number(u.tokens_used || 0).toLocaleString('pt-BR')}`
+            }]
+          }
+        });
+      }
+
+      if (toolName === 'listar_modelos_api') {
+        const [models] = await pool.query("SELECT model_key, name, multiplier FROM models WHERE status = 'active' ORDER BY name ASC");
+        const listStr = models.map(m => `- ${m.name} (ID: ${m.model_key}) [Multiplicador: ${m.multiplier}x]`).join('\n');
+        return res.status(200).json({
+          jsonrpc: '2.0',
+          id: msgId,
+          result: {
+            content: [{ type: 'text', text: `Modelos disponíveis na API:\n\n${listStr || 'Nenhum modelo cadastrado ativo no momento.'}` }]
+          }
+        });
+      }
+
+      if (toolName === 'executar_subagente') {
+        let rawModel = args.modelo;
+        if (!rawModel) {
+          try {
+            const [activeM] = await pool.query("SELECT model_key FROM models WHERE status = 'active' ORDER BY id ASC LIMIT 1");
+            if (activeM && activeM.length > 0) rawModel = activeM[0].model_key;
+          } catch (e) {}
+        }
+        if (!rawModel) rawModel = 'gemini-3.8-flash-medium';
+
+        const prompt = args.prompt || '';
+        const incomingContents = [{ role: 'user', parts: [{ text: prompt }] }];
+        const { targetEngine, customPrompt, providerId, multiplier: modelMultiplier } = await resolveModelConfig(rawModel, incomingContents);
+
+        let systemParts = [];
+        if (customPrompt) systemParts.push(customPrompt);
+        if (args.system_prompt) systemParts.push(args.system_prompt);
+        const finalSystemInstruction = systemParts.join('\n\n');
+
+        let replyText = '';
+        let account = null;
+
+        if (providerId && providerId !== 2) {
+          const incomingMsgs = [
+            ...(finalSystemInstruction ? [{ role: 'system', content: finalSystemInstruction }] : []),
+            { role: 'user', content: prompt }
+          ];
+          const extResult = await executeExternalProvider(providerId, targetEngine, incomingMsgs, finalSystemInstruction, []);
+          replyText = extResult.replyText;
+        } else {
+          const { googleResp, account: acc } = await executeWithFallback(
+            targetEngine,
+            incomingContents,
+            finalSystemInstruction,
+            rawModel,
+            { temperature: 0.7, maxOutputTokens: 16384, tools: [] }
+          );
+          account = acc;
+          const actualResp = googleResp?.response || googleResp;
+          const candidates = actualResp?.candidates || [];
+          if (candidates.length > 0 && candidates[0].content?.parts) {
+            for (const p of candidates[0].content.parts) {
+              if (p.thought) continue;
+              if (p.text) replyText += p.text;
+            }
+          }
+        }
+
+        const inputTokens = Math.ceil((prompt.length + (finalSystemInstruction ? finalSystemInstruction.length : 0)) / 4);
+        const outputTokens = Math.ceil(replyText.length / 4);
+        logUsage(userKey, rawModel, inputTokens, outputTokens, account?.id || null, modelMultiplier);
+
+        return res.status(200).json({
+          jsonrpc: '2.0',
+          id: msgId,
+          result: {
+            content: [{ type: 'text', text: replyText }]
+          }
+        });
+      }
+
+      return res.status(404).json({ jsonrpc: '2.0', id: msgId, error: { code: -32601, message: `Tool not found: ${toolName}` } });
+    }
+
+    // Default fallback
+    return res.status(200).json({ jsonrpc: '2.0', id: msgId, result: { status: 'ready', service: 'mcp' } });
   });
 
   // -------------------------------------------------------------
