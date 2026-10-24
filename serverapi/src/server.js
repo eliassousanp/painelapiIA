@@ -52,7 +52,7 @@ process.on('unhandledRejection', (reason) => {
   console.error('[Gateway UnhandledRejection]:', reason);
 });
 
-const dbConfig = {
+let dbConfig = {
   host: process.env.DB_HOST || '127.0.0.1',
   port: parseInt(process.env.DB_PORT || '3306'),
   user: process.env.DB_USER || 'root',
@@ -61,6 +61,30 @@ const dbConfig = {
   waitForConnections: true,
   connectionLimit: 20
 };
+
+// Fallback inteligente: se não houver senha no .env, tenta ler do config/database.php gerado pelo instalador
+try {
+  const phpDbPath = path.resolve(__dirname, '../../config/database.php');
+  if (fs.existsSync(phpDbPath)) {
+    const phpContent = fs.readFileSync(phpDbPath, 'utf8');
+    const hostMatch = phpContent.match(/\$db_host\s*=\s*['"]([^'"]+)['"]/);
+    const portMatch = phpContent.match(/\$db_port\s*=\s*['"]([^'"]+)['"]/);
+    const nameMatch = phpContent.match(/\$db_name\s*=\s*['"]([^'"]+)['"]/);
+    const userMatch = phpContent.match(/\$db_user\s*=\s*['"]([^'"]+)['"]/);
+    const passMatch = phpContent.match(/\$db_pass\s*=\s*['"]([^'"]*)['"]/);
+
+    if (userMatch && (!process.env.DB_PASSWORD || process.env.DB_PASSWORD === '')) {
+      if (hostMatch) dbConfig.host = hostMatch[1];
+      if (portMatch) dbConfig.port = parseInt(portMatch[1]);
+      if (nameMatch) dbConfig.database = nameMatch[1];
+      if (userMatch) dbConfig.user = userMatch[1];
+      if (passMatch) dbConfig.password = passMatch[1];
+      console.log(`[Database] Credenciais carregadas com sucesso de config/database.php (Usuário: ${dbConfig.user}, Banco: ${dbConfig.database})`);
+    }
+  }
+} catch (e) {
+  console.warn('[Database] Aviso ao ler fallback de database.php:', e.message);
+}
 
 const pool = mysql.createPool(dbConfig);
 const accountPool = new AntigravityAccountPool(pool);

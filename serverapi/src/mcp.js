@@ -47,8 +47,8 @@ export function initMcp(app, gateway) {
   // ROTA INFORMATIVA / STATUS
   // -------------------------------------------------------------
   app.get(['/mcp', '/v1/mcp'], (req, res) => {
-    const host = req.get('host') || 'localhost:3000';
-    const protocol = req.protocol === 'https' || req.headers['x-forwarded-proto'] === 'https' ? 'https' : 'http';
+    const host = req.headers['x-forwarded-host'] || req.get('host') || 'localhost:3000';
+    const protocol = req.headers['x-forwarded-proto'] || req.protocol || 'http';
     const baseUrl = `${protocol}://${host}`;
 
     res.json({
