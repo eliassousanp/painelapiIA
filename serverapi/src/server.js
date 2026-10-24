@@ -73,7 +73,7 @@ try {
     const userMatch = phpContent.match(/\$db_user\s*=\s*['"]([^'"]+)['"]/);
     const passMatch = phpContent.match(/\$db_pass\s*=\s*['"]([^'"]*)['"]/);
 
-    if (userMatch && (!process.env.DB_PASSWORD || process.env.DB_PASSWORD === '')) {
+    if (userMatch) {
       if (hostMatch) dbConfig.host = hostMatch[1];
       if (portMatch) dbConfig.port = parseInt(portMatch[1]);
       if (nameMatch) dbConfig.database = nameMatch[1];
@@ -85,6 +85,17 @@ try {
 } catch (e) {
   console.warn('[Database] Aviso ao ler fallback de database.php:', e.message);
 }
+
+app.get('/mcp/debug-env', (req, res) => {
+  res.json({
+    dbConfig_user: dbConfig.user,
+    dbConfig_db: dbConfig.database,
+    has_password: Boolean(dbConfig.password),
+    phpDbPath: path.resolve(__dirname, '../../config/database.php'),
+    phpDbExists: fs.existsSync(path.resolve(__dirname, '../../config/database.php')),
+    env_user: process.env.DB_USER || null
+  });
+});
 
 const pool = mysql.createPool(dbConfig);
 const accountPool = new AntigravityAccountPool(pool);
