@@ -313,13 +313,105 @@ export function initMcp(app, gateway) {
     }
   });
 
+  // -------------------------------------------------------------
+  // SUPORTE OAUTH AUTOMÁTICO PARA O CONECTOR DO CLAUDE DESKTOP
+  // -------------------------------------------------------------
+  app.get('/.well-known/oauth-authorization-server', (req, res) => {
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    const host = req.headers['x-forwarded-host'] || req.get('host') || 'api.brlove.online';
+    const protocol = req.headers['x-forwarded-proto'] || req.protocol || 'https';
+    const baseUrl = `${protocol}://${host}`;
+
+    res.json({
+      issuer: baseUrl,
+      authorization_endpoint: `${baseUrl}/oauth/authorize`,
+      token_endpoint: `${baseUrl}/oauth/token`,
+      registration_endpoint: `${baseUrl}/oauth/register`,
+      response_types_supported: ['code'],
+      response_modes_supported: ['query'],
+      grant_types_supported: ['authorization_code'],
+      code_challenge_methods_supported: ['S256', 'plain'],
+      token_endpoint_auth_methods_supported: ['none', 'client_secret_post', 'client_secret_basic']
+    });
+  });
+
+  app.get('/.well-known/oauth-protected-resource', (req, res) => {
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    const host = req.headers['x-forwarded-host'] || req.get('host') || 'api.brlove.online';
+    const protocol = req.headers['x-forwarded-proto'] || req.protocol || 'https';
+    const baseUrl = `${protocol}://${host}`;
+
+    res.json({
+      resource: `${baseUrl}/mcp`,
+      authorization_servers: [baseUrl],
+      scopes_supported: ['mcp']
+    });
+  });
+
+  // Registro dinâmico de cliente OAuth (RFC 7591)
+  app.post('/oauth/register', (req, res) => {
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    res.setHeader('Access-Control-Allow-Headers', '*');
+    res.status(201).json({
+      client_id: 'claude-desktop-client',
+      client_secret: 'claude-desktop-secret',
+      client_id_issued_at: Math.floor(Date.now() / 1000),
+      client_name: 'Claude Desktop',
+      redirect_uris: req.body?.redirect_uris || ['https://claude.ai/api/mcp/auth_callback'],
+      grant_types: ['authorization_code'],
+      response_types: ['code'],
+      token_endpoint_auth_method: 'none'
+    });
+  });
+
+  // Autorização automática sem tela de login (auto-aprovação instantânea)
+  app.get('/oauth/authorize', (req, res) => {
+    const redirectUri = req.query.redirect_uri;
+    const state = req.query.state || '';
+    const code = 'brlove_oauth_code_' + Date.now();
+
+    if (redirectUri) {
+      try {
+        const targetUrl = new URL(redirectUri);
+        targetUrl.searchParams.set('code', code);
+        if (state) targetUrl.searchParams.set('state', state);
+        return res.redirect(targetUrl.toString());
+      } catch (e) {}
+    }
+
+    res.json({ status: 'authorized', code });
+  });
+
+  // Emissão do token Bearer usando a chave ativa do painel
+  app.post('/oauth/token', async (req, res) => {
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    res.setHeader('Access-Control-Allow-Headers', '*');
+
+    let defaultKey = 'sk-ant-api03-00118f355d9f95bb694ef9cb7b2f44c5ccdf69b1e6610cb2';
+    try {
+      const [keys] = await pool.query("SELECT api_key FROM api_keys WHERE status = 'active' ORDER BY id ASC LIMIT 1");
+      if (keys && keys.length > 0) defaultKey = keys[0].api_key;
+    } catch (e) {}
+
+    res.json({
+      access_token: defaultKey,
+      token_type: 'Bearer',
+      expires_in: 31536000,
+      scope: 'mcp'
+    });
+  });
+
   // Suporte a OPTIONS para pre-flight CORS em clientes web/remotos
-  app.options(['/mcp/sse', '/v1/mcp/sse', '/mcp/messages', '/v1/mcp/messages', '/mcp'], (req, res) => {
+  app.options([
+    '/mcp/sse', '/v1/mcp/sse', '/mcp/messages', '/v1/mcp/messages', '/mcp',
+    '/.well-known/oauth-authorization-server', '/.well-known/oauth-protected-resource',
+    '/oauth/register', '/oauth/authorize', '/oauth/token'
+  ], (req, res) => {
     res.setHeader('Access-Control-Allow-Origin', '*');
     res.setHeader('Access-Control-Allow-Headers', '*');
     res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
     res.sendStatus(204);
   });
 
-  console.log(`🤖 MCP Server (SSE) inicializado e disponível em /mcp/sse`);
+  console.log(`🤖 MCP Server (SSE + OAuth Auto-Handshake) inicializado e disponível em /mcp`);
 }
