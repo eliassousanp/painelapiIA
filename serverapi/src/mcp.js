@@ -251,9 +251,8 @@ export function initMcp(app, gateway) {
 
     console.log(`[MCP] Nova conexão SSE estabelecida: ${sessionId} (Usuário ID: ${userKey.user_id})`);
 
-    // Conectar o servidor ao transporte e iniciar o streaming
+    // Conectar o servidor ao transporte (connect() já chama transport.start() automaticamente)
     await server.connect(transport);
-    await transport.start();
   }
 
   // Rota SSE explícita

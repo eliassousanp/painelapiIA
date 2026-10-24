@@ -54,6 +54,10 @@ $anthropicBaseUrl = $nodeGatewayBase;
 $openaiBaseUrl = $nodeGatewayBase . '/v1';
 $apiBaseUrl = $nodeGatewayBase . '/v1';
 
+$firstApiKey = (!empty($apiKeys)) ? $apiKeys[0]['api_key'] : 'SUA_API_KEY_AQUI';
+$mcpUrl = $nodeGatewayBase . '/mcp?apiKey=' . $firstApiKey;
+$mcpSseUrl = $nodeGatewayBase . '/mcp/sse';
+
 // Buscar modelos de IA ativos cadastrados
 try {
     $stmtClientModels = $db->query("SELECT model_key, name, is_realtime, is_smart_routing, multiplier FROM models WHERE status = 'active' ORDER BY id ASC");
@@ -526,6 +530,9 @@ if (isset($_COOKIE['theme_scheme'])) {
                     <button onclick="switchTab('claudecode')" id="tab-claudecode" class="tab-btn px-4 py-2 rounded-xl text-xs font-semibold text-gray-400 hover:text-white transition">
                         <i class="fa-solid fa-terminal mr-1.5 text-purple-400"></i> Claude Code CLI
                     </button>
+                    <button onclick="switchTab('mcp')" id="tab-mcp" class="tab-btn px-4 py-2 rounded-xl text-xs font-semibold text-gray-400 hover:text-white transition flex items-center border border-cyan-500/20 bg-cyan-500/5 hover:bg-cyan-500/10 shrink-0">
+                        <i class="fa-solid fa-cube mr-1.5 text-cyan-400"></i> MCP Server (Claude Desktop & Subagentes)
+                    </button>
                     <button onclick="switchTab('audio')" id="tab-audio" class="tab-btn px-4 py-2 rounded-xl text-xs font-semibold text-gray-400 hover:text-white transition flex items-center border border-amber-500/20 bg-amber-500/5 hover:bg-amber-500/10 shrink-0">
                         <i class="fa-solid fa-microphone mr-1.5 text-amber-400"></i> Transcrição de Áudio
                     </button>
@@ -728,6 +735,99 @@ claude --model claude-3-5-sonnet</pre>
                                 <li>No terminal (PowerShell, CMD ou Bash), inicie o Claude passando o modelo desejado via parâmetro: <code class="text-amber-300 font-mono">claude --model <span class="selected-model-text">claude-3-5-sonnet</span></code>.</li>
                                 <li>O comando <code class="text-amber-300 font-mono">/model</code> só funciona <strong>dentro do chat interativo</strong> do Claude após ser iniciado.</li>
                             </ul>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Conteúdo Tab: MCP Server (Claude Desktop & Subagentes) -->
+                <div id="tab-content-mcp" class="tab-content pt-4 space-y-5 hidden">
+                    <div class="bg-gradient-to-br from-cyan-950/40 via-blue-950/30 to-gray-950 p-6 rounded-2xl border border-cyan-500/30 space-y-6">
+                        <div class="flex flex-col md:flex-row md:items-center justify-between gap-4 border-b border-cyan-500/20 pb-4">
+                            <div>
+                                <div class="font-bold text-cyan-300 flex items-center text-base">
+                                    <i class="fa-solid fa-cube mr-2.5 text-cyan-400 text-lg"></i> Model Context Protocol (MCP) & Subagentes
+                                </div>
+                                <p class="text-xs text-gray-300 mt-1">
+                                    Conecte o <strong>Claude Desktop</strong> (Windows/Mac) ou o <strong>Claude Code</strong> diretamente ao seu painel via MCP. Use sua assinatura Pro e delegue tarefas pesadas para os subagentes da API sem queimar seus tokens da Anthropic.
+                                </p>
+                            </div>
+                            <div class="flex items-center space-x-2 shrink-0">
+                                <span class="text-[11px] px-2.5 py-1 rounded-full bg-cyan-500/20 text-cyan-300 font-semibold border border-cyan-500/30 flex items-center">
+                                    <span class="w-2 h-2 rounded-full bg-cyan-400 animate-ping mr-1.5"></span> MCP 2024-11-05 Ativo
+                                </span>
+                            </div>
+                        </div>
+
+                        <!-- 2 Opções de Conexão: Claude Desktop e Claude Code -->
+                        <div class="grid grid-cols-1 lg:grid-cols-2 gap-5 text-xs">
+                            <!-- Opção 1: Claude Desktop (App) -->
+                            <div class="bg-gray-900/90 p-5 rounded-xl border border-gray-800 space-y-3 flex flex-col justify-between">
+                                <div class="space-y-2">
+                                    <div class="text-cyan-400 font-bold flex items-center text-sm">
+                                        <i class="fa-solid fa-desktop mr-2 text-cyan-400"></i> Opção 1: Claude Desktop (Windows / Mac)
+                                    </div>
+                                    <p class="text-gray-300">
+                                        No Claude Desktop, clique em <strong>Conectores</strong> (ou <strong>Settings → Developer</strong>) e adicione um conector personalizado:
+                                    </p>
+                                    <div class="space-y-1 mt-2">
+                                        <label class="text-[11px] text-gray-400 font-semibold">Endereço HTTPS do Conector (com sua API Key):</label>
+                                        <div class="flex items-center space-x-2">
+                                            <code class="text-cyan-300 font-mono select-all block truncate bg-gray-950 p-2 rounded border border-gray-800/80 flex-1 text-[11px]"><?php echo $mcpUrl; ?></code>
+                                            <button onclick="copyToClipboard('<?php echo $mcpUrl; ?>', 'URL do MCP copiada com sucesso!')" class="px-3 py-2 rounded bg-cyan-600 hover:bg-cyan-500 text-white font-semibold transition shrink-0">
+                                                <i class="fa-solid fa-copy mr-1"></i> Copiar
+                                            </button>
+                                        </div>
+                                    </div>
+                                </div>
+                                <div class="p-3 rounded-lg bg-cyan-500/10 border border-cyan-500/20 text-[11px] text-cyan-200">
+                                    <i class="fa-solid fa-circle-check mr-1 text-cyan-400"></i> Após conectar, as ferramentas <strong>executar_subagente</strong>, <strong>consultar_saldo_api</strong> e <strong>listar_modelos_api</strong> aparecem automaticamente no ícone de martelo (🔨) no chat!
+                                </div>
+                            </div>
+
+                            <!-- Opção 2: Claude Code CLI -->
+                            <div class="bg-gray-900/90 p-5 rounded-xl border border-gray-800 space-y-3 flex flex-col justify-between">
+                                <div class="space-y-2">
+                                    <div class="text-purple-400 font-bold flex items-center text-sm">
+                                        <i class="fa-solid fa-terminal mr-2 text-purple-400"></i> Opção 2: Claude Code CLI (Terminal)
+                                    </div>
+                                    <p class="text-gray-300">
+                                        Execute este comando único no terminal onde você roda o Claude Code para registrar o servidor MCP:
+                                    </p>
+                                    <div class="space-y-1 mt-2">
+                                        <label class="text-[11px] text-gray-400 font-semibold">Comando para registrar MCP:</label>
+                                        <div class="code-block p-2.5 rounded-lg font-mono text-[11px] text-purple-300 bg-gray-950 border border-gray-800/80 relative overflow-x-auto">
+                                            <button onclick="copyToClipboard('claude mcp add --transport sse painel-subagente <?php echo $mcpSseUrl; ?> --header &quot;Authorization: Bearer <?php echo $firstApiKey; ?>&quot;', 'Comando MCP copiado!')" class="absolute top-2 right-2 px-2 py-1 rounded bg-gray-800 hover:bg-gray-700 text-white text-[10px] transition">
+                                                <i class="fa-solid fa-copy"></i>
+                                            </button>
+                                            <pre>claude mcp add --transport sse painel-subagente <?php echo $mcpSseUrl; ?> --header "Authorization: Bearer <?php echo $firstApiKey; ?>"</pre>
+                                        </div>
+                                    </div>
+                                </div>
+                                <div class="p-3 rounded-lg bg-purple-500/10 border border-purple-500/20 text-[11px] text-purple-200">
+                                    <i class="fa-solid fa-robot mr-1 text-purple-400"></i> No terminal do Claude Code, peça: <em>"Use o subagente do painel para analisar meu código"</em>!
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- Ferramentas MCP Disponíveis -->
+                        <div class="bg-gray-900/80 p-4 rounded-xl border border-gray-800 space-y-3">
+                            <div class="font-bold text-gray-200 text-xs flex items-center">
+                                <i class="fa-solid fa-screwdriver-wrench mr-2 text-amber-400"></i> Ferramentas que o Claude ganha com o seu MCP:
+                            </div>
+                            <div class="grid grid-cols-1 md:grid-cols-3 gap-3 text-xs">
+                                <div class="p-3 rounded-lg bg-gray-950 border border-gray-800">
+                                    <div class="font-bold text-cyan-300 font-mono text-[11px]">executar_subagente</div>
+                                    <p class="text-gray-400 text-[11px] mt-1">Executa raciocínios complexos, geração de código e análises pesadas delegando para a sua API.</p>
+                                </div>
+                                <div class="p-3 rounded-lg bg-gray-950 border border-gray-800">
+                                    <div class="font-bold text-emerald-300 font-mono text-[11px]">consultar_saldo_api</div>
+                                    <p class="text-gray-400 text-[11px] mt-1">Consulta o saldo de tokens e histórico de consumo diretamente pelo chat.</p>
+                                </div>
+                                <div class="p-3 rounded-lg bg-gray-950 border border-gray-800">
+                                    <div class="font-bold text-purple-300 font-mono text-[11px]">listar_modelos_api</div>
+                                    <p class="text-gray-400 text-[11px] mt-1">Exibe a lista de todos os modelos ativos cadastrados no seu painel.</p>
+                                </div>
+                            </div>
                         </div>
                     </div>
                 </div>
