@@ -285,16 +285,17 @@ export function initMcp(app, gateway) {
   });
 
   // -------------------------------------------------------------
-  // ROTA POST: MENSAGENS DO CLIENTE MCP (JSON-RPC)
+  // ROTA POST: MENSAGENS E PROBE DO CLIENTE MCP (JSON-RPC)
   // -------------------------------------------------------------
-  app.post(['/mcp/messages', '/v1/mcp/messages'], async (req, res) => {
+  app.post(['/mcp', '/v1/mcp', '/mcp/messages', '/v1/mcp/messages', '/mcp/sse', '/v1/mcp/sse'], async (req, res) => {
     res.setHeader('Access-Control-Allow-Origin', '*');
     res.setHeader('Access-Control-Allow-Headers', '*');
     res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
 
     const sessionId = req.query.sessionId;
     if (!sessionId) {
-      return res.status(400).send('Query parameter sessionId is required');
+      // Probe do Claude Desktop ou handshake inicial
+      return res.status(200).json({ jsonrpc: '2.0', result: { status: 'ready', service: 'mcp' } });
     }
 
     const session = activeSessions.get(sessionId);
