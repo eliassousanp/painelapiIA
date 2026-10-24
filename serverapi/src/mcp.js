@@ -37,7 +37,7 @@ export function initMcp(app, gateway) {
     }
 
     if (!clientApiKey) {
-      throw new Error('API Key não fornecida. Passe via Authorization: Bearer <key> ou ?apiKey=<key>');
+      throw new Error('API Key não fornecida. Passe via Authorization: Bearer <key> ou na URL com ?apiKey=<sua_chave>');
     }
 
     return await authenticateApiKey(clientApiKey);
@@ -259,29 +259,28 @@ export function initMcp(app, gateway) {
   // Rota SSE explícita
   app.get(['/mcp/sse', '/v1/mcp/sse'], handleMcpSse);
 
-  // Rota /mcp padrão direta (se tiver chave ou accept: event-stream conecta direto no SSE)
+  // Rota /mcp padrão direta: conecta SEMPRE ao SSE para o conector do Claude Desktop
   app.get(['/mcp', '/v1/mcp'], (req, res) => {
-    const hasAuth = req.headers['authorization'] || req.headers['x-api-key'] || req.query['apiKey'] || req.query['api_key'] || req.query['key'] || req.query['token'];
-    const isSse = (req.headers['accept'] || '').includes('text/event-stream');
-    if (hasAuth || isSse) {
-      return handleMcpSse(req, res);
+    const acceptsHtml = (req.headers['accept'] || '').includes('text/html');
+    if (acceptsHtml && !req.query['apiKey'] && !req.headers['authorization']) {
+      const host = req.headers['x-forwarded-host'] || req.get('host') || 'localhost:3000';
+      const protocol = req.headers['x-forwarded-proto'] || req.protocol || 'https';
+      const baseUrl = `${protocol}://${host}`;
+
+      return res.json({
+        status: 'online',
+        service: 'Antigravity Gateway MCP Server',
+        version: '1.0.0',
+        transport: 'SSE (Server-Sent Events)',
+        endpoints: {
+          mcp: `${baseUrl}/mcp`,
+          sse: `${baseUrl}/mcp/sse`,
+          messages: `${baseUrl}/mcp/messages`
+        }
+      });
     }
 
-    const host = req.headers['x-forwarded-host'] || req.get('host') || 'localhost:3000';
-    const protocol = req.headers['x-forwarded-proto'] || req.protocol || 'http';
-    const baseUrl = `${protocol}://${host}`;
-
-    res.json({
-      status: 'online',
-      service: 'Antigravity Gateway MCP Server',
-      version: '1.0.0',
-      transport: 'SSE (Server-Sent Events)',
-      endpoints: {
-        mcp: `${baseUrl}/mcp`,
-        sse: `${baseUrl}/mcp/sse`,
-        messages: `${baseUrl}/mcp/messages`
-      }
-    });
+    return handleMcpSse(req, res);
   });
 
   // -------------------------------------------------------------
@@ -382,19 +381,13 @@ export function initMcp(app, gateway) {
     res.json({ status: 'authorized', code });
   });
 
-  // Emissão do token Bearer usando a chave ativa do painel
   app.post('/oauth/token', async (req, res) => {
     res.setHeader('Access-Control-Allow-Origin', '*');
     res.setHeader('Access-Control-Allow-Headers', '*');
 
-    let defaultKey = 'sk-ant-api03-00118f355d9f95bb694ef9cb7b2f44c5ccdf69b1e6610cb2';
-    try {
-      const [keys] = await pool.query("SELECT api_key FROM api_keys WHERE status = 'active' ORDER BY id ASC LIMIT 1");
-      if (keys && keys.length > 0) defaultKey = keys[0].api_key;
-    } catch (e) {}
-
+    const token = req.query?.apiKey || req.body?.apiKey || req.body?.client_secret || req.body?.code || '';
     res.json({
-      access_token: defaultKey,
+      access_token: token,
       token_type: 'Bearer',
       expires_in: 31536000,
       scope: 'mcp'
