@@ -660,7 +660,7 @@ async function executeExternalProvider(providerId, targetEngine, incomingMessage
       'Authorization': `Bearer ${pKey.api_key}`
     },
     body: JSON.stringify(reqBody),
-    signal: AbortSignal.timeout(60000)
+    signal: AbortSignal.timeout(300000) // 5 minutos para raciocínios longos e thinking models
   });
 
   const resText = await res.text();
@@ -815,18 +815,18 @@ async function resolveModelConfig(requestedModel, incomingContents = []) {
   let [rows] = await pool.query(`
     SELECT id, model_key, name, provider_id, upstream_model, multiplier, pre_prompt, is_admin_only, is_realtime, is_smart_routing, routing_fast_model, routing_fast_multiplier, routing_medium_model, routing_medium_multiplier, routing_heavy_model, routing_heavy_multiplier
     FROM models 
-    WHERE (model_key = ? OR name = ?) AND status = 'active'
+    WHERE (model_key = ? OR name = ? OR upstream_model = ?) AND status = 'active'
     LIMIT 1
-  `, [cleanModel, requestedModel]);
+  `, [cleanModel, requestedModel, cleanModel]);
 
   if (rows.length === 0) {
     const baseKey = cleanModel.split('-202')[0].replace('-latest', '');
     [rows] = await pool.query(`
       SELECT id, model_key, name, provider_id, upstream_model, multiplier, pre_prompt, is_admin_only, is_realtime, is_smart_routing, routing_fast_model, routing_fast_multiplier, routing_medium_model, routing_medium_multiplier, routing_heavy_model, routing_heavy_multiplier
       FROM models 
-      WHERE (model_key LIKE ? OR name LIKE ?) AND status = 'active'
+      WHERE (model_key LIKE ? OR name LIKE ? OR upstream_model LIKE ?) AND status = 'active'
       LIMIT 1
-    `, [`%${baseKey}%`, `%${baseKey}%`]);
+    `, [`%${baseKey}%`, `%${baseKey}%`, `%${baseKey}%`]);
   }
 
   const globalPrePrompt = await getSetting('pre_prompt', '');
@@ -2332,6 +2332,10 @@ app.get('/v1/realtime/voices', (req, res) => {
 
 const PORT = process.env.PORT || 3000;
 const httpServer = createServer(app);
+httpServer.timeout = 0; // Desativa timeout de inatividade forçado no socket (essencial para MCP, SSE e subagentes)
+httpServer.keepAliveTimeout = 120000; // 120 segundos
+httpServer.headersTimeout = 125000;
+httpServer.requestTimeout = 0; // Sem encerramento precoce de requisições longas
 
 // Inicializar WebSocket Realtime
 initRealtime(httpServer, {

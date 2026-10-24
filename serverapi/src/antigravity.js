@@ -16,7 +16,7 @@ const CLIENT_METADATA = {
   pluginType: 2
 };
 
-function postRequest(endpointUrl, bodyData, accessToken) {
+function postRequest(endpointUrl, bodyData, accessToken, timeoutMs = 300000) {
   return new Promise((resolve, reject) => {
     const parsed = new URL(endpointUrl);
     const postBody = JSON.stringify(bodyData);
@@ -56,7 +56,7 @@ function postRequest(endpointUrl, bodyData, accessToken) {
       });
     });
 
-    req.setTimeout(15000, () => req.destroy(new Error('Timeout de requisicao com a Google CloudCode API (15s)')));
+    req.setTimeout(timeoutMs, () => req.destroy(new Error(`Timeout de requisicao com a Google CloudCode API (${Math.round(timeoutMs / 1000)}s)`)));
     req.on('error', reject);
     req.write(postBody);
     req.end();
@@ -220,6 +220,7 @@ export function streamGenerateContent(accessToken, projectId, model, contents, s
       let capturedToolCalls = [];
 
       res.on('data', chunk => {
+        req.setTimeout(300000); // Reseta o timeout de 5 minutos sempre que novos dados chegam
         if (abortSignal?.aborted) {
           req.destroy();
           return;
@@ -300,6 +301,7 @@ export function streamGenerateContent(accessToken, projectId, model, contents, s
       }
     });
 
+    req.setTimeout(300000, () => req.destroy(new Error('Timeout de stream com a Google CloudCode API (300s)')));
     req.write(postBody);
     req.end();
   });

@@ -12,13 +12,14 @@ export function initMcp(app, gateway) {
   const {
     authenticateApiKey,
     executeWithFallback,
+    executeWithFallbackStream,
     executeExternalProvider,
     resolveModelConfig,
     logUsage,
     pool
   } = gateway;
 
-  // Mapa de sessões ativas: sessionId -> { transport, server, userKey }
+  // Mapa de sessões ativas: sessionId -> { transport, server, userKey, keepAliveTimer }
   const activeSessions = new Map();
 
   // Helper para extrair API Key de headers ou query param
@@ -43,14 +44,126 @@ export function initMcp(app, gateway) {
     return await authenticateApiKey(clientApiKey);
   }
 
+  /**
+   * Executa a chamada do subagente com suporte a streaming contínuo e múltiplos fallbacks
+   */
+  async function runSubagent({ prompt, modelo, system_prompt, userKey, progressCallback, abortSignal }) {
+    let rawModel = modelo;
+    if (!rawModel) {
+      try {
+        const [activeM] = await pool.query("SELECT model_key FROM models WHERE status = 'active' ORDER BY id ASC LIMIT 1");
+        if (activeM && activeM.length > 0) {
+          rawModel = activeM[0].model_key;
+        }
+      } catch (e) {}
+    }
+    if (!rawModel) rawModel = 'gemini-3.8-flash-medium';
 
+    const incomingContents = [
+      {
+        role: 'user',
+        parts: [{ text: prompt }]
+      }
+    ];
+
+    const { targetEngine, customPrompt, providerId, multiplier: modelMultiplier } = await resolveModelConfig(rawModel, incomingContents);
+
+    let systemParts = [];
+    if (customPrompt) systemParts.push(customPrompt);
+    if (system_prompt) systemParts.push(system_prompt);
+    const finalSystemInstruction = systemParts.join('\n\n');
+
+    let replyText = '';
+    let account = null;
+
+    if (providerId && providerId !== 2) {
+      const incomingMsgs = [
+        ...(finalSystemInstruction ? [{ role: 'system', content: finalSystemInstruction }] : []),
+        { role: 'user', content: prompt }
+      ];
+      const extResult = await executeExternalProvider(providerId, targetEngine, incomingMsgs, finalSystemInstruction, []);
+      replyText = extResult.replyText;
+    } else {
+      // 1. Tenta executar via streaming contínuo para manter os dados fluindo em gerações longas
+      let streamSucceeded = false;
+      if (typeof executeWithFallbackStream === 'function') {
+        try {
+          let streamedText = '';
+          const streamRes = await executeWithFallbackStream(
+            targetEngine,
+            incomingContents,
+            finalSystemInstruction,
+            rawModel,
+            { temperature: 0.7, maxOutputTokens: 16384, tools: [] },
+            (tokenChunk) => {
+              if (tokenChunk) {
+                streamedText += tokenChunk;
+                if (typeof progressCallback === 'function') {
+                  progressCallback(streamedText.length);
+                }
+              }
+            },
+            abortSignal
+          );
+          account = streamRes.account;
+          replyText = streamRes.googleResp?.replyText || streamedText;
+          streamSucceeded = true;
+        } catch (streamErr) {
+          console.warn('[MCP Subagente] Fallback de streaming para execução direta:', streamErr.message);
+        }
+      }
+
+      // 2. Se o streaming não foi usado ou falhou, usa a execução padrão (com timeout estendido de 300s)
+      if (!streamSucceeded) {
+        const { googleResp, account: acc } = await executeWithFallback(
+          targetEngine,
+          incomingContents,
+          finalSystemInstruction,
+          rawModel,
+          { temperature: 0.7, maxOutputTokens: 16384, tools: [] }
+        );
+        account = acc;
+
+        const actualResp = googleResp?.response || googleResp;
+        const candidates = actualResp?.candidates || [];
+        if (candidates.length > 0 && candidates[0].content?.parts) {
+          for (const p of candidates[0].content.parts) {
+            if (p.thought) continue;
+            if (p.text) replyText += p.text;
+          }
+        }
+      }
+    }
+
+    if (!replyText) {
+      replyText = '[Aviso do Subagente: Não foi gerada resposta textual pelo modelo selecionado.]';
+    }
+
+    // Debitar cota
+    const inputTokens = Math.ceil((prompt.length + (finalSystemInstruction ? finalSystemInstruction.length : 0)) / 4);
+    const outputTokens = Math.ceil(replyText.length / 4);
+    logUsage(userKey, rawModel, inputTokens, outputTokens, account?.id || null, modelMultiplier);
+
+    return replyText;
+  }
 
   // Handler principal de SSE do MCP
   async function handleMcpSse(req, res) {
-    // Garantir CORS total
+    // Desabilitar timeouts no socket e na conexão HTTP para streaming ilimitado
+    req.setTimeout(0);
+    res.setTimeout(0);
+    if (req.socket) {
+      req.socket.setTimeout(0);
+      req.socket.setKeepAlive(true, 10000);
+      req.socket.setNoDelay(true);
+    }
+
+    // Garantir CORS total e flags anti-buffering para Cloudflare, Nginx e Apache
     res.setHeader('Access-Control-Allow-Origin', '*');
     res.setHeader('Access-Control-Allow-Headers', '*');
     res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+    res.setHeader('X-Accel-Buffering', 'no');
+    res.setHeader('Cache-Control', 'no-cache, no-transform');
 
     let userKey;
     try {
@@ -86,73 +199,37 @@ export function initMcp(app, gateway) {
       'Executa uma tarefa ou raciocínio complexo delegando para um subagente na API do Painel (ex: Claude Opus Thinking, Claude Sonnet, Gemini 3.8, etc.)',
       {
         prompt: z.string().describe('Instrução clara e detalhada para o subagente executar'),
-        modelo: z.string().optional().describe('Modelo da API para executar o subagente. Exemplos: claude-opus-4-6-thinking, claude-sonnet-4-6, gemini-3.8-flash-high, gemini-3.8-flash-medium. Padrão: claude-opus-4-6-thinking'),
+        modelo: z.string().optional().describe('Modelo da API para executar o subagente. Exemplos: claude-opus-5.5, gemini-3.7-flash-medium. Padrão: modelo padrão ativo'),
         system_prompt: z.string().optional().describe('Instrução de persona ou diretrizes de sistema para guiar o subagente')
       },
-      async ({ prompt, modelo, system_prompt }) => {
+      async ({ prompt, modelo, system_prompt }, extra) => {
         try {
-          let rawModel = modelo;
-          if (!rawModel) {
-            try {
-              const [activeM] = await pool.query("SELECT model_key FROM models WHERE status = 'active' ORDER BY id ASC LIMIT 1");
-              if (activeM && activeM.length > 0) {
-                rawModel = activeM[0].model_key;
-              }
-            } catch (e) {}
-          }
-          if (!rawModel) rawModel = 'gemini-3.8-flash-medium';
-          const incomingContents = [
-            {
-              role: 'user',
-              parts: [{ text: prompt }]
+          const progressToken = extra?._meta?.progressToken;
+          let lastReported = 0;
+
+          const progressCallback = (len) => {
+            if (progressToken && Date.now() - lastReported > 2000) {
+              lastReported = Date.now();
+              try {
+                server.server.notification({
+                  method: 'notifications/progress',
+                  params: {
+                    progressToken: progressToken,
+                    progress: len
+                  }
+                }).catch(() => {});
+              } catch (e) {}
             }
-          ];
+          };
 
-          const { targetEngine, customPrompt, providerId, multiplier: modelMultiplier } = await resolveModelConfig(rawModel, incomingContents);
-
-          let systemParts = [];
-          if (customPrompt) systemParts.push(customPrompt);
-          if (system_prompt) systemParts.push(system_prompt);
-          const finalSystemInstruction = systemParts.join('\n\n');
-
-          let replyText = '';
-          let account = null;
-
-          if (providerId && providerId !== 2) {
-            const incomingMsgs = [
-              ...(finalSystemInstruction ? [{ role: 'system', content: finalSystemInstruction }] : []),
-              { role: 'user', content: prompt }
-            ];
-            const extResult = await executeExternalProvider(providerId, targetEngine, incomingMsgs, finalSystemInstruction, []);
-            replyText = extResult.replyText;
-          } else {
-            const { googleResp, account: acc } = await executeWithFallback(
-              targetEngine,
-              incomingContents,
-              finalSystemInstruction,
-              rawModel,
-              { temperature: 0.7, maxOutputTokens: 16384, tools: [] }
-            );
-            account = acc;
-
-            const actualResp = googleResp?.response || googleResp;
-            const candidates = actualResp?.candidates || [];
-            if (candidates.length > 0 && candidates[0].content?.parts) {
-              for (const p of candidates[0].content.parts) {
-                if (p.thought) continue;
-                if (p.text) replyText += p.text;
-              }
-            }
-          }
-
-          if (!replyText) {
-            replyText = '[Aviso do Subagente: Não foi gerada resposta textual pelo modelo selecionado.]';
-          }
-
-          // Debitar cota
-          const inputTokens = Math.ceil((prompt.length + (finalSystemInstruction ? finalSystemInstruction.length : 0)) / 4);
-          const outputTokens = Math.ceil(replyText.length / 4);
-          logUsage(userKey, rawModel, inputTokens, outputTokens, account?.id || null, modelMultiplier);
+          const replyText = await runSubagent({
+            prompt,
+            modelo,
+            system_prompt,
+            userKey,
+            progressCallback,
+            abortSignal: extra?.signal
+          });
 
           return {
             content: [
@@ -241,13 +318,33 @@ export function initMcp(app, gateway) {
       }
     );
 
+    // Heartbeat periódico (a cada 15 segundos) via comentário SSE ": keepalive\n\n"
+    // Isso mantém proxies intermediários, Cloudflare (100s) e clientes Claude conectados durante raciocínios longos
+    const keepAliveTimer = setInterval(() => {
+      if (res.writableEnded || res.destroyed) {
+        clearInterval(keepAliveTimer);
+        return;
+      }
+      try {
+        res.write(': keepalive\n\n');
+      } catch (e) {
+        clearInterval(keepAliveTimer);
+      }
+    }, 15000);
+
     // Armazenar sessão
-    activeSessions.set(sessionId, { transport, server, userKey });
+    activeSessions.set(sessionId, { transport, server, userKey, keepAliveTimer });
 
     transport.onclose = () => {
+      clearInterval(keepAliveTimer);
       console.log(`[MCP] Sessão SSE encerrada: ${sessionId} (Usuário ID: ${userKey.user_id})`);
       activeSessions.delete(sessionId);
     };
+
+    res.on('close', () => {
+      clearInterval(keepAliveTimer);
+      activeSessions.delete(sessionId);
+    });
 
     console.log(`[MCP] Nova conexão SSE estabelecida: ${sessionId} (Usuário ID: ${userKey.user_id})`);
 
@@ -286,9 +383,19 @@ export function initMcp(app, gateway) {
   // ROTA POST: MENSAGENS E PROTOCOLO MCP COMPLETO (HTTP + SSE)
   // -------------------------------------------------------------
   app.post(['/mcp', '/v1/mcp', '/mcp/messages', '/v1/mcp/messages', '/mcp/sse', '/v1/mcp/sse'], async (req, res) => {
+    // Desabilitar timeouts no socket e na conexão HTTP para permitir requisições de longa duração
+    req.setTimeout(0);
+    res.setTimeout(0);
+    if (req.socket) {
+      req.socket.setTimeout(0);
+      req.socket.setKeepAlive(true, 10000);
+      req.socket.setNoDelay(true);
+    }
+
     res.setHeader('Access-Control-Allow-Origin', '*');
     res.setHeader('Access-Control-Allow-Headers', '*');
     res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+    res.setHeader('X-Accel-Buffering', 'no');
 
     const sessionId = req.query.sessionId;
     if (sessionId) {
@@ -423,64 +530,32 @@ export function initMcp(app, gateway) {
       }
 
       if (toolName === 'executar_subagente') {
-        let rawModel = args.modelo;
-        if (!rawModel) {
-          try {
-            const [activeM] = await pool.query("SELECT model_key FROM models WHERE status = 'active' ORDER BY id ASC LIMIT 1");
-            if (activeM && activeM.length > 0) rawModel = activeM[0].model_key;
-          } catch (e) {}
-        }
-        if (!rawModel) rawModel = 'gemini-3.8-flash-medium';
+        try {
+          const replyText = await runSubagent({
+            prompt: args.prompt || '',
+            modelo: args.modelo,
+            system_prompt: args.system_prompt,
+            userKey
+          });
 
-        const prompt = args.prompt || '';
-        const incomingContents = [{ role: 'user', parts: [{ text: prompt }] }];
-        const { targetEngine, customPrompt, providerId, multiplier: modelMultiplier } = await resolveModelConfig(rawModel, incomingContents);
-
-        let systemParts = [];
-        if (customPrompt) systemParts.push(customPrompt);
-        if (args.system_prompt) systemParts.push(args.system_prompt);
-        const finalSystemInstruction = systemParts.join('\n\n');
-
-        let replyText = '';
-        let account = null;
-
-        if (providerId && providerId !== 2) {
-          const incomingMsgs = [
-            ...(finalSystemInstruction ? [{ role: 'system', content: finalSystemInstruction }] : []),
-            { role: 'user', content: prompt }
-          ];
-          const extResult = await executeExternalProvider(providerId, targetEngine, incomingMsgs, finalSystemInstruction, []);
-          replyText = extResult.replyText;
-        } else {
-          const { googleResp, account: acc } = await executeWithFallback(
-            targetEngine,
-            incomingContents,
-            finalSystemInstruction,
-            rawModel,
-            { temperature: 0.7, maxOutputTokens: 16384, tools: [] }
-          );
-          account = acc;
-          const actualResp = googleResp?.response || googleResp;
-          const candidates = actualResp?.candidates || [];
-          if (candidates.length > 0 && candidates[0].content?.parts) {
-            for (const p of candidates[0].content.parts) {
-              if (p.thought) continue;
-              if (p.text) replyText += p.text;
+          return res.status(200).json({
+            jsonrpc: '2.0',
+            id: msgId,
+            result: {
+              content: [{ type: 'text', text: replyText }]
             }
-          }
+          });
+        } catch (subErr) {
+          console.error('[MCP Direct HTTP Error]:', subErr.message);
+          return res.status(200).json({
+            jsonrpc: '2.0',
+            id: msgId,
+            result: {
+              isError: true,
+              content: [{ type: 'text', text: `Erro ao executar subagente: ${subErr.message}` }]
+            }
+          });
         }
-
-        const inputTokens = Math.ceil((prompt.length + (finalSystemInstruction ? finalSystemInstruction.length : 0)) / 4);
-        const outputTokens = Math.ceil(replyText.length / 4);
-        logUsage(userKey, rawModel, inputTokens, outputTokens, account?.id || null, modelMultiplier);
-
-        return res.status(200).json({
-          jsonrpc: '2.0',
-          id: msgId,
-          result: {
-            content: [{ type: 'text', text: replyText }]
-          }
-        });
       }
 
       return res.status(404).json({ jsonrpc: '2.0', id: msgId, error: { code: -32601, message: `Tool not found: ${toolName}` } });

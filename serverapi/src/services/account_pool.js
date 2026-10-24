@@ -363,9 +363,9 @@ class AntigravityAccountPool {
           return await this.executeWithFallback('gemini-3.8-flash-medium', contents, systemInstruction, rawModel, customConfig);
         }
 
-        // Se for 429/503 ou rate limit, tenta a próxima conta imediatamente
-        if (status === 429 || status === 503 || msg.includes('quota') || msg.includes('rate') || msg.includes('resource_exhausted')) {
-          console.warn(`[Pool Fallback] Tentativa ${attempt + 1} falhou com 429 na conta ${account?.email || 'N/A'}. Tentando próxima conta livre...`);
+        // Se for 429/503, rate limit ou timeout temporário, tenta a próxima conta imediatamente
+        if (status === 429 || status === 503 || msg.includes('quota') || msg.includes('rate') || msg.includes('resource_exhausted') || msg.includes('timeout') || msg.includes('econnreset') || msg.includes('socket hang up')) {
+          console.warn(`[Pool Fallback] Tentativa ${attempt + 1} falhou na conta ${account?.email || 'N/A'} (${err.message}). Tentando próxima conta livre...`);
           continue;
         }
 
@@ -426,8 +426,8 @@ class AntigravityAccountPool {
           return await this.executeWithFallbackStream('gemini-3.8-flash-medium', contents, systemInstruction, requestedModel, customConfig, onChunk, abortSignal);
         }
 
-        if (status === 429 || status === 503 || msg.includes('quota') || msg.includes('rate') || msg.includes('resource_exhausted')) {
-          console.warn(`[Pool Stream Fallback] Tentativa ${attempt + 1} falhou com 429 na conta ${account?.email || 'N/A'}. Tentando próxima conta livre...`);
+        if (status === 429 || status === 503 || msg.includes('quota') || msg.includes('rate') || msg.includes('resource_exhausted') || msg.includes('timeout') || msg.includes('econnreset') || msg.includes('socket hang up')) {
+          console.warn(`[Pool Stream Fallback] Tentativa ${attempt + 1} falhou na conta ${account?.email || 'N/A'} (${err.message}). Tentando próxima conta livre...`);
           continue;
         }
 
