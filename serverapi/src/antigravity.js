@@ -4,9 +4,11 @@ const DAILY_ENDPOINT = 'https://daily-cloudcode-pa.googleapis.com';
 const CLOUD_CODE_ENDPOINT = 'https://cloudcode-pa.googleapis.com';
 
 const HEADERS = {
-  'User-Agent': 'antigravity/2.11.0 windows/amd64',
+  'User-Agent': 'antigravity/2.18.0 windows/amd64',
   'X-Client-Name': 'antigravity',
-  'x-goog-api-client': 'gl-node/18.18.2 fire/0.8.6 grpc/1.10.x',
+  'X-Client-Version': '2.18.0',
+  'x-goog-api-client': 'gl-node/20.11.0 fire/0.8.6 grpc/1.10.x ide/antigravity',
+  'X-Requested-With': 'XMLHttpRequest',
   'Content-Type': 'application/json'
 };
 
@@ -118,7 +120,8 @@ export async function generateContent(accessToken, projectId, model, contents, s
     model: targetModel,
     request: {
       contents: contents,
-      generationConfig: generationConfig
+      generationConfig: generationConfig,
+      metadata: CLIENT_METADATA
     }
   };
 
@@ -166,7 +169,8 @@ export function streamGenerateContent(accessToken, projectId, model, contents, s
       model: targetModel,
       request: {
         contents: contents,
-        generationConfig: generationConfig
+        generationConfig: generationConfig,
+        metadata: CLIENT_METADATA
       }
     };
 

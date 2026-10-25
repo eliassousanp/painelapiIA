@@ -240,7 +240,7 @@ class AntigravityAccountPool {
     stat.activeRequests = Math.max(0, stat.activeRequests - 1);
   }
 
-  async handleAccountError(accId, err, modelKey = '') {
+  async handleAccountError(accId, err, modelKey = '', accountEmail = '') {
     if (!accId) return;
     const stat = this.getAccountStats(accId);
     stat.failedCalls++;
@@ -264,13 +264,26 @@ class AntigravityAccountPool {
     // Modelo reportado no erro pelo Google ou passado como parâmetro
     const actualModel = meta.model || modelKey || '';
 
+    const isTosViolation = status === 403 || reason === 'TOS_VIOLATION' || msg.includes('terms of service') || msg.includes('tos_violation');
+
+    if (isTosViolation) {
+      console.error(`[Pool Manager] ⛔ CONTA #${accId} (${accountEmail || 'N/A'}) FOI BLOQUEADA/SUSPENSA PELO GOOGLE (403 TOS_VIOLATION). Marcando como banida no banco de dados...`);
+      try {
+        await this.pool.query("UPDATE antigravity_accounts SET status = 'banned' WHERE id = ?", [accId]);
+      } catch (dbErr) {
+        console.error('[Pool Manager] Erro ao desativar conta banida no banco:', dbErr.message);
+      }
+      stat.cooldownUntil = Infinity; // Nunca mais seleciona nesta execução
+      return;
+    }
+
     const isDailyQuotaExhausted = reason === 'QUOTA_EXHAUSTED' ||
       msg.includes('individual quota reached') ||
       msg.includes('upgrade your subscription') ||
       msg.includes('quota_exhausted');
 
     if (isDailyQuotaExhausted && actualModel) {
-      console.warn(`[Pool Manager] Cota do modelo "${actualModel}" ESGOTADA no Google para conta #${accId}. Reset previsto: ${meta.quotaResetTimeStamp || meta.quotaResetDelay || 'N/A'}. Registrando no banco...`);
+      console.warn(`[Pool Manager] Cota do modelo "${actualModel}" ESGOTADA no Google para conta #${accId} (${accountEmail || 'N/A'}). Reset previsto: ${meta.quotaResetTimeStamp || meta.quotaResetDelay || 'N/A'}. Registrando no banco...`);
       try {
         const [rows] = await this.pool.query('SELECT quotas_json FROM antigravity_accounts WHERE id = ?', [accId]);
         if (rows.length > 0) {
@@ -318,12 +331,12 @@ class AntigravityAccountPool {
     } else if (status === 429 || status === 503 || msg.includes('quota') || msg.includes('rate') || msg.includes('resource_exhausted')) {
       // Cooldown curto de 5 segundos em memória para desobstruir a janela de burst
       stat.cooldownUntil = Date.now() + 5000;
-      console.warn(`[Pool Manager] Conta #${accId} atingiu limite de taxa temporário (429/RPM). Cooldown de 5s aplicado.`);
+      console.warn(`[Pool Manager] Conta #${accId} (${accountEmail || 'N/A'}) atingiu limite de taxa temporário (429/RPM). Cooldown de 5s aplicado.`);
     }
   }
 
   /**
-   * Executa chamada com Fallback automático em caso de 429/503
+   * Executa chamada com Fallback automático em caso de 429/503 ou 403
    */
   async executeWithFallback(targetEngine, contents, systemInstruction, rawModel, customConfig = null) {
     if (targetEngine.includes('3.6') || targetEngine.includes('3.7')) {
@@ -334,7 +347,7 @@ class AntigravityAccountPool {
     let lastError = null;
 
     // Tenta até passar pelas contas disponíveis
-    for (let attempt = 0; attempt < Math.min(accounts.length, 5); attempt++) {
+    for (let attempt = 0; attempt < accounts.length; attempt++) {
       let account = null;
       try {
         account = await this.acquireAccount(targetEngine, 4000);
@@ -351,7 +364,7 @@ class AntigravityAccountPool {
       } catch (err) {
         if (account) {
           this.releaseAccount(account.id);
-          this.handleAccountError(account.id, err, targetEngine || rawModel);
+          this.handleAccountError(account.id, err, targetEngine || rawModel, account.email);
         }
         lastError = err;
         const status = err.status || err.statusCode || 0;
@@ -363,9 +376,12 @@ class AntigravityAccountPool {
           return await this.executeWithFallback('gemini-3.8-flash-medium', contents, systemInstruction, rawModel, customConfig);
         }
 
-        // Se for 429/503, rate limit ou timeout temporário, tenta a próxima conta imediatamente
-        if (status === 429 || status === 503 || msg.includes('quota') || msg.includes('rate') || msg.includes('resource_exhausted') || msg.includes('timeout') || msg.includes('econnreset') || msg.includes('socket hang up')) {
-          console.warn(`[Pool Fallback] Tentativa ${attempt + 1} falhou na conta ${account?.email || 'N/A'} (${err.message}). Tentando próxima conta livre...`);
+        const isTOSor403 = status === 403 || msg.includes('terms of service') || msg.includes('tos_violation') || msg.includes('permission_denied');
+        const isRateLimitOrTimeout = status === 429 || status === 503 || msg.includes('quota') || msg.includes('rate') || msg.includes('resource_exhausted') || msg.includes('timeout') || msg.includes('econnreset') || msg.includes('socket hang up');
+
+        // Se for 403/TOS_VIOLATION ou 429/503, rate limit ou timeout temporário, tenta a próxima conta imediatamente sem quebrar a requisição
+        if (isTOSor403 || isRateLimitOrTimeout) {
+          console.warn(`[Pool Fallback] Tentativa ${attempt + 1} falhou na conta #${account?.id} (${account?.email || 'N/A'}) [${status}]: ${err.message}. Tentando próxima conta livre...`);
           continue;
         }
 
@@ -395,7 +411,7 @@ class AntigravityAccountPool {
     const accounts = await this.getAllActiveAccounts();
     let lastError = null;
 
-    for (let attempt = 0; attempt < Math.min(accounts.length, 5); attempt++) {
+    for (let attempt = 0; attempt < accounts.length; attempt++) {
       let account = null;
       try {
         account = await this.acquireAccount(targetEngine, 4000);
@@ -414,7 +430,7 @@ class AntigravityAccountPool {
       } catch (err) {
         if (account) {
           this.releaseAccount(account.id);
-          this.handleAccountError(account.id, err, targetEngine || requestedModel);
+          this.handleAccountError(account.id, err, targetEngine || requestedModel, account.email);
         }
         lastError = err;
         const status = err.status || err.statusCode || 0;
@@ -426,8 +442,11 @@ class AntigravityAccountPool {
           return await this.executeWithFallbackStream('gemini-3.8-flash-medium', contents, systemInstruction, requestedModel, customConfig, onChunk, abortSignal);
         }
 
-        if (status === 429 || status === 503 || msg.includes('quota') || msg.includes('rate') || msg.includes('resource_exhausted') || msg.includes('timeout') || msg.includes('econnreset') || msg.includes('socket hang up')) {
-          console.warn(`[Pool Stream Fallback] Tentativa ${attempt + 1} falhou na conta ${account?.email || 'N/A'} (${err.message}). Tentando próxima conta livre...`);
+        const isTOSor403 = status === 403 || msg.includes('terms of service') || msg.includes('tos_violation') || msg.includes('permission_denied');
+        const isRateLimitOrTimeout = status === 429 || status === 503 || msg.includes('quota') || msg.includes('rate') || msg.includes('resource_exhausted') || msg.includes('timeout') || msg.includes('econnreset') || msg.includes('socket hang up');
+
+        if (isTOSor403 || isRateLimitOrTimeout) {
+          console.warn(`[Pool Stream Fallback] Tentativa ${attempt + 1} falhou na conta #${account?.id} (${account?.email || 'N/A'}) [${status}]: ${err.message}. Tentando próxima conta livre...`);
           continue;
         }
 

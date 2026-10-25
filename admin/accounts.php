@@ -238,7 +238,9 @@ $gatewayExternalUrl = getGatewayPublicUrl();
 
 $accounts = $db->query("SELECT * FROM antigravity_accounts ORDER BY id DESC")->fetchAll();
 $totalAccounts = count($accounts);
-$activeAccounts = count(array_filter($accounts, fn($a) => $a['is_active'] == 1));
+$bannedAccounts = count(array_filter($accounts, fn($a) => $a['status'] === 'banned'));
+$activeAccounts = count(array_filter($accounts, fn($a) => $a['is_active'] == 1 && $a['status'] !== 'banned'));
+$pausedAccounts = count(array_filter($accounts, fn($a) => !$a['is_active'] && $a['status'] !== 'banned'));
 $totalRequests = array_sum(array_column($accounts, 'total_requests'));
 $totalTokens = array_sum(array_column($accounts, 'total_tokens'));
 
@@ -323,7 +325,7 @@ $opusPoolAvailableTokens = 0;
 $opusPoolMaxTokens = 0;
 
 foreach ($accounts as $acc) {
-    if (!$acc['is_active']) continue;
+    if (!$acc['is_active'] || $acc['status'] === 'banned') continue;
     $opStat = getAccountOpusQuotaStatus($acc);
     $opusPoolMaxTokens += $opStat['max_tokens'];
     if ($opStat['status'] === 'available') {
@@ -391,7 +393,7 @@ $keyModels = [
 // (Exclui modelos obsoletos abaixo de 3.8 e contabiliza Opus apenas de contas confirmadas)
 $poolModelStats = [];
 foreach ($accounts as $acc) {
-    if (!$acc['is_active']) continue;
+    if (!$acc['is_active'] || $acc['status'] === 'banned') continue;
     $qData = !empty($acc['quotas_json']) ? json_decode($acc['quotas_json'], true) : null;
     $models = $qData['models'] ?? [];
     $accOpusStat = getAccountOpusQuotaStatus($acc);
@@ -465,6 +467,37 @@ require_once __DIR__ . '/includes/header.php';
         </div>
     <?php endif; ?>
 
+    <?php if ($bannedAccounts > 0): ?>
+        <!-- BANNER DE ALERTA: CONTAS BANIDAS (TOS VIOLATION) -->
+        <div class="p-5 rounded-3xl bg-rose-950/40 border border-rose-500/40 text-rose-300 flex flex-col md:flex-row md:items-center justify-between gap-4 shadow-2xl shadow-rose-950/50">
+            <div class="flex items-start space-x-3.5">
+                <div class="w-11 h-11 rounded-2xl bg-rose-600/20 text-rose-400 flex items-center justify-center shrink-0 border border-rose-500/30 text-lg mt-0.5">
+                    <i class="fa-solid fa-skull-crossbones"></i>
+                </div>
+                <div>
+                    <h4 class="font-extrabold text-white text-sm flex items-center gap-2">
+                        <span><?= $bannedAccounts ?> Conta(s) Google Bloqueada(s) / Banida(s)</span>
+                        <span class="px-2.5 py-0.5 rounded-full bg-rose-600/30 text-rose-300 text-[10px] font-mono font-bold border border-rose-500/30">403 TOS_VIOLATION</span>
+                    </h4>
+                    <p class="text-xs text-rose-200/80 mt-1 leading-relaxed">
+                        O Google desativou o Cloud Code nestas contas por violação de termos de serviço. O gateway isolou essas contas automaticamente para não derrubar as requisições do seu pool. 
+                        Você pode tentar <strong>Reautenticar</strong> ou <strong>Colar o link na VPS</strong> para verificar se a conta volta.
+                    </p>
+                </div>
+            </div>
+            <div class="flex items-center space-x-2 shrink-0 self-end md:self-center">
+                <button type="button" onclick="document.getElementById('vpsModal').classList.remove('hidden')" class="px-3.5 py-2.5 rounded-xl bg-amber-500/10 hover:bg-amber-500/20 text-amber-300 font-bold text-xs border border-amber-500/30 transition flex items-center gap-1.5 cursor-pointer shadow-sm">
+                    <i class="fa-solid fa-server text-[11px]"></i>
+                    <span>Colar Link VPS</span>
+                </button>
+                <a href="https://forms.gle/hGzM9MEUv2azZsrb9" target="_blank" class="px-3.5 py-2.5 rounded-xl bg-rose-600 hover:bg-rose-500 text-white font-bold text-xs border border-rose-400/40 transition flex items-center gap-1.5 cursor-pointer shadow-md shadow-rose-600/20">
+                    <i class="fa-solid fa-gavel text-[11px]"></i>
+                    <span>Formulário de Apelação</span>
+                </a>
+            </div>
+        </div>
+    <?php endif; ?>
+
     <!-- Banner & Estatísticas Topo -->
     <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-4">
         <div class="glass-card p-5 rounded-3xl border border-gray-800">
@@ -473,15 +506,25 @@ require_once __DIR__ . '/includes/header.php';
             <div class="text-[11px] text-gray-500 mt-0.5">Pool de Contas Google</div>
         </div>
         <div class="glass-card p-5 rounded-3xl border border-gray-800">
-            <div class="text-[11px] font-bold text-gray-400 uppercase tracking-wider">Contas Ativas</div>
+            <div class="text-[11px] font-bold text-emerald-400 uppercase tracking-wider">Contas Ativas</div>
             <div class="text-2xl font-extrabold text-emerald-400 mt-1"><?= $activeAccounts ?></div>
             <div class="text-[11px] text-gray-500 mt-0.5">Prontas para requisições</div>
         </div>
-        <div class="glass-card p-5 rounded-3xl border border-gray-800">
-            <div class="text-[11px] font-bold text-gray-400 uppercase tracking-wider">Requisições</div>
-            <div class="text-2xl font-extrabold text-purple-400 mt-1"><?= number_format($totalRequests, 0, ',', '.') ?></div>
-            <div class="text-[11px] text-gray-500 mt-0.5">Total de chamadas</div>
-        </div>
+        <?php if ($bannedAccounts > 0): ?>
+            <div class="glass-card p-5 rounded-3xl border border-rose-500/30 bg-rose-950/20">
+                <div class="text-[11px] font-bold text-rose-400 uppercase tracking-wider flex items-center gap-1">
+                    <i class="fa-solid fa-skull-crossbones text-[10px]"></i> Contas Banidas
+                </div>
+                <div class="text-2xl font-extrabold text-rose-400 mt-1"><?= $bannedAccounts ?></div>
+                <div class="text-[11px] text-rose-300/70 mt-0.5">Bloqueadas pelo Google (403)</div>
+            </div>
+        <?php else: ?>
+            <div class="glass-card p-5 rounded-3xl border border-gray-800">
+                <div class="text-[11px] font-bold text-gray-400 uppercase tracking-wider">Requisições</div>
+                <div class="text-2xl font-extrabold text-purple-400 mt-1"><?= number_format($totalRequests, 0, ',', '.') ?></div>
+                <div class="text-[11px] text-gray-500 mt-0.5">Total de chamadas</div>
+            </div>
+        <?php endif; ?>
         <div class="glass-card p-5 rounded-3xl border border-gray-800">
             <div class="text-[11px] font-bold text-amber-400 uppercase tracking-wider flex items-center gap-1">
                 <i class="fa-solid fa-coins text-[10px]"></i> Tokens Consumidos
@@ -738,22 +781,30 @@ require_once __DIR__ . '/includes/header.php';
             <?php foreach ($accounts as $acc): 
                 $quotasData = !empty($acc['quotas_json']) ? json_decode($acc['quotas_json'], true) : null;
                 $modelsQuotas = $quotasData['models'] ?? [];
+                $isBanned = ($acc['status'] === 'banned');
+                $cardClasses = $isBanned 
+                    ? 'border-rose-500/50 bg-gradient-to-b from-rose-950/25 to-gray-900/90 shadow-rose-950/30 ring-1 ring-rose-500/20' 
+                    : 'border-gray-800 bg-gray-900/60';
             ?>
-                <div class="glass-card rounded-3xl border border-gray-800 overflow-hidden shadow-2xl transition">
+                <div class="glass-card rounded-3xl border <?= $cardClasses ?> overflow-hidden shadow-2xl transition">
                     <details class="group">
-                        <summary class="p-5 bg-gray-900/60 hover:bg-gray-900/90 flex flex-col lg:flex-row lg:items-center justify-between gap-4 cursor-pointer select-none transition list-none">
+                        <summary class="p-5 <?= $isBanned ? 'bg-rose-950/20 hover:bg-rose-950/40' : 'bg-gray-900/60 hover:bg-gray-900/90' ?> flex flex-col lg:flex-row lg:items-center justify-between gap-4 cursor-pointer select-none transition list-none">
                         <div class="flex items-center space-x-3.5">
                             <?php if (!empty($acc['picture'])): ?>
-                                <img src="<?= htmlspecialchars($acc['picture']) ?>" referrerpolicy="no-referrer" loading="lazy" class="w-12 h-12 rounded-2xl border border-gray-700 shadow-md object-cover" onerror="this.onerror=null; this.src='https://ui-avatars.com/api/?name=<?= urlencode($acc['name'] ?: $acc['email']) ?>&background=d97736&color=fff&rounded=true&bold=true';">
+                                <img src="<?= htmlspecialchars($acc['picture']) ?>" referrerpolicy="no-referrer" loading="lazy" class="w-12 h-12 rounded-2xl border <?= $isBanned ? 'border-rose-500/40 ring-2 ring-rose-500/20' : 'border-gray-700' ?> shadow-md object-cover" onerror="this.onerror=null; this.src='https://ui-avatars.com/api/?name=<?= urlencode($acc['name'] ?: $acc['email']) ?>&background=d97736&color=fff&rounded=true&bold=true';">
                             <?php else: ?>
-                                <div class="w-12 h-12 rounded-2xl bg-gradient-to-tr from-amber-600 to-orange-600 text-white flex items-center justify-center font-bold text-lg shadow-md">
+                                <div class="w-12 h-12 rounded-2xl <?= $isBanned ? 'bg-gradient-to-tr from-rose-700 to-red-800' : 'bg-gradient-to-tr from-amber-600 to-orange-600' ?> text-white flex items-center justify-center font-bold text-lg shadow-md">
                                     <?= strtoupper(substr($acc['email'], 0, 1)) ?>
                                 </div>
                             <?php endif; ?>
                             <div>
                                 <div class="flex items-center space-x-2.5">
                                     <h3 class="text-base font-bold text-white"><?= htmlspecialchars($acc['name'] ?? 'Conta Google') ?></h3>
-                                    <?php if ($acc['is_active']): ?>
+                                    <?php if ($acc['status'] === 'banned'): ?>
+                                        <span class="px-2.5 py-0.5 rounded-full bg-rose-600/30 border border-rose-500/40 text-rose-300 text-[10px] font-bold flex items-center gap-1 shadow-sm">
+                                            <i class="fa-solid fa-skull-crossbones text-[9px] text-rose-400"></i> BANIDO (TOS 403)
+                                        </span>
+                                    <?php elseif ($acc['is_active']): ?>
                                         <span class="px-2.5 py-0.5 rounded-full bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 text-[10px] font-bold">ATIVO</span>
                                     <?php else: ?>
                                         <span class="px-2.5 py-0.5 rounded-full bg-red-500/10 border border-red-500/20 text-red-400 text-[10px] font-bold">PAUSADO</span>
@@ -790,7 +841,7 @@ require_once __DIR__ . '/includes/header.php';
                                     <?php endif; ?>
                                 </div>
                                 <div class="text-xs text-gray-400 mt-1.5 flex flex-wrap items-center gap-x-2 gap-y-1">
-                                    <span class="text-gray-300 font-mono"><?= htmlspecialchars($acc['email']) ?></span>
+                                    <span class="<?= $isBanned ? 'text-rose-300' : 'text-gray-300' ?> font-mono"><?= htmlspecialchars($acc['email']) ?></span>
                                     <span>•</span>
                                     <span class="font-mono text-[11px] text-cyan-300">Project: <?= htmlspecialchars($acc['project_id'] ?? 'managed') ?></span>
                                     <span>•</span>
@@ -804,26 +855,44 @@ require_once __DIR__ . '/includes/header.php';
                         </div>
 
                         <!-- Botões de Ação da Conta -->
-                        <div class="flex items-center space-x-2 self-end lg:self-center">
-                            <!-- Botão Testar Cota Opus -->
-                            <form method="POST" action="" class="inline" onclick="event.stopPropagation();" onsubmit="return handleVerifyOpusSingle(event, <?= $acc['id'] ?>);">
-                                <input type="hidden" name="action" value="verify_opus">
-                                <input type="hidden" name="account_id" value="<?= $acc['id'] ?>">
-                                <button type="submit" title="Fazer probe real na Google API para testar cota e tokens de Claude Opus" class="btn-verify-opus-single px-3 py-2 rounded-xl bg-pink-600/20 hover:bg-pink-600/30 text-pink-300 text-xs font-bold border border-pink-500/30 transition flex items-center space-x-1.5 shadow-lg shadow-pink-500/10 cursor-pointer disabled:opacity-60 disabled:cursor-not-allowed">
-                                    <i class="fa-solid fa-gem text-[11px]"></i>
-                                    <span>Testar Cota Opus</span>
+                        <div class="flex items-center space-x-2 self-end lg:self-center flex-wrap gap-y-2">
+                            <?php if ($acc['status'] === 'banned'): ?>
+                                <!-- 1º Passo: Botão Reautenticar (Abre OAuth) -->
+                                <a href="<?= htmlspecialchars($gatewayExternalUrl) ?>/auth/antigravity/login?redirect=<?= urlencode($currentAppUrl . '?msg=connected') ?>" target="_blank" onclick="event.stopPropagation();" class="px-3 py-2 rounded-xl bg-gradient-to-r from-amber-600 to-orange-600 hover:from-amber-500 hover:to-orange-500 text-white text-xs font-bold border border-amber-500/30 transition flex items-center space-x-1.5 shadow-lg shadow-amber-600/20 cursor-pointer" title="Clique para abrir a tela de login do Google">
+                                    <i class="fa-brands fa-google text-[11px]"></i>
+                                    <span>1º Reautenticar</span>
+                                </a>
+                                <!-- 2º Passo: Botão Colar Link VPS (Abre modal de VPS direto aqui) -->
+                                <button type="button" onclick="event.stopPropagation(); document.getElementById('vpsModal').classList.remove('hidden');" class="px-3 py-2 rounded-xl bg-cyan-600/20 hover:bg-cyan-600/30 text-cyan-300 text-xs font-bold border border-cyan-500/40 transition flex items-center space-x-1.5 cursor-pointer shadow-md" title="Cole aqui a URL localhost:51121 se estiver usando VPS">
+                                    <i class="fa-solid fa-server text-[11px] text-cyan-400"></i>
+                                    <span>2º Colar Link VPS</span>
                                 </button>
-                            </form>
+                                <!-- Link para Apelar no Google -->
+                                <a href="https://forms.gle/hGzM9MEUv2azZsrb9" target="_blank" onclick="event.stopPropagation();" class="px-3 py-2 rounded-xl bg-rose-600/20 hover:bg-rose-600/30 text-rose-300 text-xs font-semibold border border-rose-500/30 transition flex items-center space-x-1.5" title="Enviar formulário oficial de apelação ao Google">
+                                    <i class="fa-solid fa-gavel text-[11px] text-rose-400"></i>
+                                    <span>Apelar Ban</span>
+                                </a>
+                            <?php else: ?>
+                                <!-- Botão Testar Cota Opus -->
+                                <form method="POST" action="" class="inline" onclick="event.stopPropagation();" onsubmit="return handleVerifyOpusSingle(event, <?= $acc['id'] ?>);">
+                                    <input type="hidden" name="action" value="verify_opus">
+                                    <input type="hidden" name="account_id" value="<?= $acc['id'] ?>">
+                                    <button type="submit" title="Fazer probe real na Google API para testar cota e tokens de Claude Opus" class="btn-verify-opus-single px-3 py-2 rounded-xl bg-pink-600/20 hover:bg-pink-600/30 text-pink-300 text-xs font-bold border border-pink-500/30 transition flex items-center space-x-1.5 shadow-lg shadow-pink-500/10 cursor-pointer disabled:opacity-60 disabled:cursor-not-allowed">
+                                        <i class="fa-solid fa-gem text-[11px]"></i>
+                                        <span>Testar Cota Opus</span>
+                                    </button>
+                                </form>
 
-                            <!-- Botão Sincronizar Cotas -->
-                            <form method="POST" action="" class="inline" onclick="event.stopPropagation();" onsubmit="return handleSyncSingle(event, <?= $acc['id'] ?>);">
-                                <input type="hidden" name="action" value="sync_quotas">
-                                <input type="hidden" name="account_id" value="<?= $acc['id'] ?>">
-                                <button type="submit" title="Consultar cotas em tempo real diretamente na API do Google" class="btn-sync-single px-3.5 py-2 rounded-xl bg-cyan-600/20 hover:bg-cyan-600/30 text-cyan-300 text-xs font-bold border border-cyan-500/30 transition flex items-center space-x-1.5 shadow-lg shadow-cyan-500/10 cursor-pointer disabled:opacity-60 disabled:cursor-not-allowed">
-                                    <i class="fa-solid fa-arrows-rotate text-[11px]"></i>
-                                    <span>Sincronizar Cotas</span>
-                                </button>
-                            </form>
+                                <!-- Botão Sincronizar Cotas -->
+                                <form method="POST" action="" class="inline" onclick="event.stopPropagation();" onsubmit="return handleSyncSingle(event, <?= $acc['id'] ?>);">
+                                    <input type="hidden" name="action" value="sync_quotas">
+                                    <input type="hidden" name="account_id" value="<?= $acc['id'] ?>">
+                                    <button type="submit" title="Consultar cotas em tempo real diretamente na API do Google" class="btn-sync-single px-3.5 py-2 rounded-xl bg-cyan-600/20 hover:bg-cyan-600/30 text-cyan-300 text-xs font-bold border border-cyan-500/30 transition flex items-center space-x-1.5 shadow-lg shadow-cyan-500/10 cursor-pointer disabled:opacity-60 disabled:cursor-not-allowed">
+                                        <i class="fa-solid fa-arrows-rotate text-[11px]"></i>
+                                        <span>Sincronizar Cotas</span>
+                                    </button>
+                                </form>
+                            <?php endif; ?>
 
                             <!-- Alternar Status -->
                             <form method="POST" action="" class="inline" onclick="event.stopPropagation();">
