@@ -120,8 +120,7 @@ export async function generateContent(accessToken, projectId, model, contents, s
     model: targetModel,
     request: {
       contents: contents,
-      generationConfig: generationConfig,
-      metadata: CLIENT_METADATA
+      generationConfig: generationConfig
     }
   };
 
@@ -169,8 +168,7 @@ export function streamGenerateContent(accessToken, projectId, model, contents, s
       model: targetModel,
       request: {
         contents: contents,
-        generationConfig: generationConfig,
-        metadata: CLIENT_METADATA
+        generationConfig: generationConfig
       }
     };
 
