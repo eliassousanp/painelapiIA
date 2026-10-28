@@ -748,7 +748,7 @@ claude --model claude-3-5-sonnet</pre>
                                     <i class="fa-solid fa-cube mr-2.5 text-cyan-400 text-lg"></i> Model Context Protocol (MCP) & Subagentes
                                 </div>
                                 <p class="text-xs text-gray-300 mt-1">
-                                    Conecte o <strong>Claude Desktop</strong> (Windows/Mac) ou o <strong>Claude Code</strong> diretamente ao seu painel via MCP. Use sua assinatura Pro e delegue tarefas pesadas para os subagentes da API sem queimar seus tokens da Anthropic.
+                                    Conecte o <strong>Claude Desktop</strong>, o <strong>Claude Code</strong> ou o <strong>OpenAI Codex CLI</strong> diretamente ao seu painel via MCP. Use seus modelos e delegue tarefas pesadas para os subagentes da API sem queimar seus tokens da Anthropic/OpenAI.
                                 </p>
                             </div>
                             <div class="flex items-center space-x-2 shrink-0">
@@ -758,8 +758,8 @@ claude --model claude-3-5-sonnet</pre>
                             </div>
                         </div>
 
-                        <!-- 2 Opções de Conexão: Claude Desktop e Claude Code -->
-                        <div class="grid grid-cols-1 lg:grid-cols-2 gap-5 text-xs">
+                        <!-- 3 Opções de Conexão: Claude Desktop, Claude Code e OpenAI Codex -->
+                        <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-5 text-xs">
                             <!-- Opção 1: Claude Desktop (App) -->
                             <div class="bg-gray-900/90 p-5 rounded-xl border border-gray-800 space-y-3 flex flex-col justify-between">
                                 <div class="space-y-2">
@@ -807,12 +807,37 @@ claude --model claude-3-5-sonnet</pre>
                                     <i class="fa-solid fa-robot mr-1 text-purple-400"></i> No terminal do Claude Code, peça: <em>"Use o subagente do painel para analisar meu código"</em>!
                                 </div>
                             </div>
+
+                            <!-- Opção 3: OpenAI Codex CLI / ChatGPT -->
+                            <div class="bg-gray-900/90 p-5 rounded-xl border border-gray-800 space-y-3 flex flex-col justify-between">
+                                <div class="space-y-2">
+                                    <div class="text-emerald-400 font-bold flex items-center text-sm">
+                                        <i class="fa-solid fa-code mr-2 text-emerald-400"></i> Opção 3: OpenAI Codex CLI (Terminal)
+                                    </div>
+                                    <p class="text-gray-300">
+                                        Conecte facilmente sem depender de variáveis de ambiente do Windows, executando um único comando:
+                                    </p>
+                                    <div class="space-y-1 mt-2">
+                                        <label class="text-[11px] text-gray-400 font-semibold">Comando para registrar no Codex:</label>
+                                        <div class="code-block p-2.5 rounded-lg font-mono text-[11px] text-emerald-300 bg-gray-950 border border-gray-800/80 relative overflow-x-auto">
+                                            <button onclick="copyToClipboard('codex mcp add painel-subagente --url &quot;<?php echo $mcpUrl; ?>&quot;', 'Comando Codex MCP copiado!')" class="absolute top-2 right-2 px-2 py-1 rounded bg-gray-800 hover:bg-gray-700 text-white text-[10px] transition">
+                                                <i class="fa-solid fa-copy"></i>
+                                            </button>
+                                            <pre>codex mcp add painel-subagente --url "<?php echo $mcpUrl; ?>"</pre>
+                                        </div>
+                                    </div>
+                                </div>
+                                <div class="p-3 rounded-lg bg-emerald-500/10 border border-emerald-500/20 text-[11px] text-emerald-200">
+                                    <i class="fa-solid fa-check mr-1 text-emerald-400"></i> Ou no arquivo <code>~/.codex/config.toml</code>:
+                                    <pre class="mt-1 font-mono text-[10px] text-gray-300 select-all">[mcp_servers.painel-subagente]&#10;url = "<?php echo $mcpUrl; ?>"</pre>
+                                </div>
+                            </div>
                         </div>
 
                         <!-- Ferramentas MCP Disponíveis -->
                         <div class="bg-gray-900/80 p-4 rounded-xl border border-gray-800 space-y-3">
                             <div class="font-bold text-gray-200 text-xs flex items-center">
-                                <i class="fa-solid fa-screwdriver-wrench mr-2 text-amber-400"></i> Ferramentas que o Claude ganha com o seu MCP:
+                                <i class="fa-solid fa-screwdriver-wrench mr-2 text-amber-400"></i> Ferramentas que o Claude e o Codex ganham com o seu MCP:
                             </div>
                             <div class="grid grid-cols-1 md:grid-cols-3 gap-3 text-xs">
                                 <div class="p-3 rounded-lg bg-gray-950 border border-gray-800">

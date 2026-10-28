@@ -25,7 +25,7 @@ export function initMcp(app, gateway) {
   // Helper para extrair API Key de headers ou query param
   async function extractAndAuth(req) {
     const authHeader = req.headers['authorization'] || '';
-    const xApiKey = req.headers['x-api-key'] || '';
+    const xApiKey = req.headers['x-api-key'] || req.headers['x-api-token'] || '';
     const queryKey = req.query['apiKey'] || req.query['api_key'] || req.query['key'] || req.query['token'] || '';
 
     let clientApiKey = '';
@@ -33,12 +33,22 @@ export function initMcp(app, gateway) {
       clientApiKey = String(queryKey).trim();
     } else if (xApiKey) {
       clientApiKey = String(xApiKey).trim();
-    } else if (authHeader.startsWith('Bearer ')) {
+    } else if (authHeader) {
       clientApiKey = authHeader.replace(/^Bearer\s+/i, '').trim();
+    } else {
+      // Procura por headers flexíveis enviados por ferramentas como Codex ou proxies (ex: BRLOVE_API_KEY, CODEX_API_KEY, etc.)
+      for (const [headerName, headerVal] of Object.entries(req.headers || {})) {
+        if (/api[-_]?key|auth[-_]?token|mcp[-_]?key/i.test(headerName)) {
+          if (headerVal && typeof headerVal === 'string' && headerVal.trim().length > 10) {
+            clientApiKey = headerVal.replace(/^Bearer\s+/i, '').trim();
+            break;
+          }
+        }
+      }
     }
 
     if (!clientApiKey) {
-      throw new Error('API Key não fornecida. Passe via Authorization: Bearer <key> ou na URL com ?apiKey=<sua_chave>');
+      throw new Error('API Key não fornecida. Passe via Authorization: Bearer <key>, x-api-key ou na URL com ?apiKey=<sua_chave>');
     }
 
     return await authenticateApiKey(clientApiKey);
@@ -415,10 +425,18 @@ export function initMcp(app, gateway) {
       return;
     }
 
-    // Se NÃO tem sessionId: é um cliente MCP usando transporte HTTP Direto (Streamable HTTP / Claude Desktop)
+    // Se NÃO tem sessionId: é um cliente MCP usando transporte HTTP Direto (Streamable HTTP / Codex / Claude Desktop)
     const body = req.body || {};
     const method = body.method;
-    const msgId = body.id ?? 1;
+    const msgId = body.id;
+
+    // Pela especificação oficial do MCP (Streamable HTTP Transports):
+    // Notificações JSON-RPC (como 'notifications/initialized' ou qualquer requisição sem 'id')
+    // DEVEM responder estritamente com HTTP 202 Accepted e sem corpo (empty body).
+    // Responder com HTTP 200 ou corpo JSON-RPC faz o Codex / clientes estritos fecharem o canal.
+    if (msgId === undefined || msgId === null || (typeof method === 'string' && method.startsWith('notifications/'))) {
+      return res.status(202).send();
+    }
 
     // 1. Handshake Initialize
     if (method === 'initialize') {
@@ -436,10 +454,6 @@ export function initMcp(app, gateway) {
           }
         }
       });
-    }
-
-    if (method === 'notifications/initialized') {
-      return res.status(200).json({ jsonrpc: '2.0', result: {} });
     }
 
     if (method === 'ping') {
