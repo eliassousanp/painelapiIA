@@ -27,7 +27,6 @@ import {
 import AntigravityAccountPool from './services/account_pool.js';
 
 import fs from 'fs';
-import { spawn } from 'child_process';
 
 const app = express();
 app.disable('x-powered-by');
@@ -2470,60 +2469,9 @@ httpServer.listen(PORT, () => {
   console.log(`🤖 Claude Code MCP:   claude mcp add --transport sse painel-subagente http://localhost:${PORT}/mcp/sse --header "Authorization: Bearer SUA_API_KEY"`);
   console.log(`=============================================================\n`);
 
-  // Túnel Cloudflare HTTPS automático (Zero-Config / Sem tela de IP / 100% Compatível com Claude Desktop)
-  const shouldStartTunnel = process.env.MCP_HTTPS_TUNNEL !== 'false' && (process.platform === 'win32' || process.env.MCP_HTTPS_TUNNEL === 'true');
-
-  if (shouldStartTunnel) {
-    let tunnelProcess = null;
-    function startHttpsTunnel() {
-      try {
-        console.log(`☁️  Iniciando Cloudflare Tunnel oficial para o Claude Desktop...`);
-        const isWin = process.platform === 'win32';
-        const cmd = isWin ? 'cmd.exe' : 'npx';
-        const args = isWin 
-          ? ['/c', 'npx', '--yes', 'cloudflared', 'tunnel', '--url', `http://localhost:${PORT}`]
-          : ['--yes', 'cloudflared', 'tunnel', '--url', `http://localhost:${PORT}`];
-
-        tunnelProcess = spawn(cmd, args, { stdio: ['ignore', 'pipe', 'pipe'] });
-
-        let urlFound = false;
-        const handleOutput = (data) => {
-          const text = data.toString();
-          const match = text.match(/https:\/\/[a-z0-9-]+\.trycloudflare\.com/i);
-          if (match && !urlFound) {
-            urlFound = true;
-            const httpsUrl = match[0];
-            console.log(`\n=============================================================`);
-            console.log(`☁️  CLOUDFLARE TUNNEL ATIVO (SEM TELA DE IP / SEM SENHA)`);
-            console.log(`👉 Link oficial para colar no Claude Desktop:`);
-            console.log(`   ${httpsUrl}/mcp/sse?apiKey=SUA_CHAVE_DO_PAINEL`);
-            console.log(`=============================================================\n`);
-          }
-        };
-
-        tunnelProcess.stdout.on('data', handleOutput);
-        tunnelProcess.stderr.on('data', handleOutput);
-
-        tunnelProcess.on('exit', () => {
-          if (!process.exitCode) {
-            setTimeout(startHttpsTunnel, 5000);
-          }
-        });
-      } catch (e) {
-        console.warn('[Cloudflare Tunnel Warning] Erro ao iniciar:', e.message);
-      }
-    }
-
-    startHttpsTunnel();
-
-    process.on('SIGINT', () => {
-      if (tunnelProcess) tunnelProcess.kill();
-      process.exit(0);
-    });
-    process.on('SIGTERM', () => {
-      if (tunnelProcess) tunnelProcess.kill();
-      process.exit(0);
-    });
-  }
+  // Sem túnel Cloudflare: o acesso é por localhost direto. O Claude Desktop/Code
+  // conecta via ponte stdio (mcp-remote) em http://localhost:3000/mcp/sse, que
+  // aceita http e tem URL fixa — nada de link que troca a cada restart.
+  console.log(`🔌 MCP local: node mcp-remote http://localhost:${PORT}/mcp/sse?apiKey=SUA_CHAVE`);
 });
 

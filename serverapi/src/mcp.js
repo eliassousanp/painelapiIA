@@ -36,12 +36,12 @@ let localModeEnabled = Boolean(ENV_LOCAL_FALLBACK && fs.existsSync(defaultProjec
 let projectRoot = defaultProjectRoot;
 
 // Descrições neutras — sempre corretas independente do modo (a IA cliente decide sozinha).
-const DESC_ARQUIVOS = 'Caminhos para o subagente LER DO DISCO DO GATEWAY. Só funciona se o gateway estiver em modo LOCAL (ativado no painel SuperAdmin) e os arquivos existirem nessa máquina. Em gateway remoto/VPS NÃO use isto — envie o código pelo parâmetro "conteudos". Ex: ["revenda.php", "admin/accounts.php"]';
+const DESC_ARQUIVOS = 'Caminhos de arquivos para o subagente LER DO DISCO DO GATEWAY. Aceita caminhos relativos ao projeto padrão ou caminhos absolutos de qualquer projeto na máquina (ex: "C:/xampp/htdocs/outro_projeto/index.php" ou "admin/accounts.php"). Em gateway remoto/VPS envie o código pelo parâmetro "conteudos".';
 
-const DESC_TOOL_DISCO = ' (lê o disco do gateway; ativo só em modo LOCAL definido no SuperAdmin — em gateway VPS/remoto use "conteudos" no executar_subagente)';
+const DESC_TOOL_DISCO = ' (lê arquivos do disco local do computador do desenvolvedor; suporta qualquer pasta ou projeto com caminho absoluto ou relativo)';
 
 // Mensagem padrão quando uma tool de disco é chamada em gateway remoto/VPS.
-const DISK_OFF_MSG = 'Leitura de disco DESLIGADA neste gateway (modo remoto/VPS). Esta ferramenta só funciona em modo LOCAL — ative no painel SuperAdmin (toggle "Modo Local do MCP" + caminho do projeto). Para analisar código agora, use a ferramenta executar_subagente enviando o código no parâmetro "conteudos" (a IA cliente lê o arquivo localmente e envia o conteúdo).';
+const DISK_OFF_MSG = 'Leitura de disco DESLIGADA neste gateway (modo remoto/VPS). Esta ferramenta só funciona em modo LOCAL — ative no painel SuperAdmin (toggle "Modo Local do MCP"). Para analisar código agora, use a ferramenta executar_subagente enviando o código no parâmetro "conteudos" (a IA cliente lê o arquivo localmente e envia o conteúdo).';
 
 const IGNORED_DIRS = new Set([
   'node_modules',
@@ -63,23 +63,57 @@ const BLOCKED_FILES = new Set([
 ]);
 
 /**
- * Valida e resolve caminho seguro dentro do projeto (impede Path Traversal e vazamento de chaves)
+ * Valida e resolve caminho seguro de arquivos e diretórios.
+ * Em modo LOCAL, permite navegar em qualquer projeto ou diretório da máquina local
+ * (ex: C:\xampp\htdocs\outro_projeto, caminhos relativos ou subpastas),
+ * bloqueando apenas arquivos com chaves privadas (.pem, .key, id_rsa).
+ * Em modo REMOTO (VPS), restringe estritamente ao diretório raiz do projeto.
  */
 function resolveSafePath(userPath, baseDir = projectRoot) {
   if (!userPath || typeof userPath !== 'string') {
     throw new Error('Caminho de arquivo inválido ou não informado.');
   }
 
-  const target = path.isAbsolute(userPath) ? path.normalize(userPath) : path.resolve(baseDir, userPath);
-  const rel = path.relative(baseDir, target);
+  const cleanUserPath = userPath.trim().replace(/^['"]|['"]$/g, '');
+  let target;
 
-  if (rel.startsWith('..') && !target.startsWith(baseDir)) {
-    throw new Error(`Acesso negado: O caminho "${userPath}" está fora do diretório do projeto.`);
+  if (path.isAbsolute(cleanUserPath)) {
+    target = path.normalize(cleanUserPath);
+  } else {
+    // 1. Tenta relativo ao baseDir
+    const candidateBase = path.resolve(baseDir, cleanUserPath);
+    if (fs.existsSync(candidateBase)) {
+      target = candidateBase;
+    } else {
+      // 2. Tenta relativo à pasta pai (ex: c:\xampp\htdocs se baseDir for c:\xampp\htdocs\brloveapi2)
+      const parentDir = path.dirname(baseDir);
+      const candidateParent = path.resolve(parentDir, cleanUserPath);
+      if (fs.existsSync(candidateParent)) {
+        target = candidateParent;
+      } else {
+        // 3. Tenta relativo ao defaultProjectRoot
+        const candidateDefault = path.resolve(defaultProjectRoot, cleanUserPath);
+        if (fs.existsSync(candidateDefault)) {
+          target = candidateDefault;
+        } else {
+          target = candidateBase;
+        }
+      }
+    }
   }
 
+  // Se NÃO for modo local (ex: gateway remoto na VPS), restringe estritamente ao baseDir
+  if (!localModeEnabled) {
+    const rel = path.relative(baseDir, target);
+    if (rel.startsWith('..') || !target.startsWith(baseDir)) {
+      throw new Error(`Acesso negado: O caminho "${userPath}" está fora do diretório do projeto.`);
+    }
+  }
+
+  // Proteção contra leitura de chaves privadas e arquivos estritamente confidenciais
   const basename = path.basename(target).toLowerCase();
   if (BLOCKED_FILES.has(basename) || basename.endsWith('.pem') || basename.endsWith('.key')) {
-    throw new Error(`Acesso negado: O arquivo "${basename}" contém dados confidenciais e foi protegido.`);
+    throw new Error(`Acesso negado: O arquivo "${basename}" contém chaves privadas e foi protegido.`);
   }
 
   return target;
@@ -115,10 +149,14 @@ function readCodeFile(caminho, linhaInicio = 1, linhaFim = null) {
 }
 
 /**
- * Varre e lista os arquivos do projeto com filtros
+ * Varre e lista os arquivos de um diretório com filtros.
+ * Suporta qualquer projeto ou subpasta (caminhos absolutos ou relativos).
  */
 function listProjectFiles(subPasta = '', extensao = '', recursivo = null) {
-  const targetDir = subPasta ? resolveSafePath(subPasta) : projectRoot;
+  const targetDir = (subPasta && typeof subPasta === 'string' && subPasta.trim())
+    ? resolveSafePath(subPasta)
+    : projectRoot;
+
   if (!fs.existsSync(targetDir) || !fs.statSync(targetDir).isDirectory()) {
     throw new Error(`Diretório não encontrado: ${subPasta || 'raiz'}`);
   }
@@ -147,7 +185,7 @@ function listProjectFiles(subPasta = '', extensao = '', recursivo = null) {
 
       if (ent.isDirectory()) {
         if (IGNORED_DIRS.has(name) || name.startsWith('.')) continue;
-        const relDir = path.relative(projectRoot, fullPath).replace(/\\/g, '/');
+        const relDir = path.relative(targetDir, fullPath).replace(/\\/g, '/');
         results.push(`📁 ${relDir}/`);
         if (shouldRecurse) {
           scan(fullPath, depth + 1);
@@ -155,25 +193,29 @@ function listProjectFiles(subPasta = '', extensao = '', recursivo = null) {
       } else if (ent.isFile()) {
         if (BLOCKED_FILES.has(name.toLowerCase()) || name.endsWith('.pem') || name.endsWith('.key')) continue;
         if (extFilter && !name.toLowerCase().endsWith(extFilter)) continue;
-        const relFile = path.relative(projectRoot, fullPath).replace(/\\/g, '/');
+        const relFile = path.relative(targetDir, fullPath).replace(/\\/g, '/');
         results.push(`📄 ${relFile}`);
       }
     }
   }
 
   scan(targetDir);
-  return results;
+  return { targetDir, results };
 }
 
 /**
- * Busca por termo em arquivos de código (grep)
+ * Busca por termo em arquivos de código (grep).
+ * Suporta qualquer projeto ou subpasta (caminhos absolutos ou relativos).
  */
 function searchInCode(termo, subPasta = '', extensao = '.php') {
   if (!termo || typeof termo !== 'string' || termo.trim().length === 0) {
     throw new Error('Informe um termo de busca válido.');
   }
 
-  const targetDir = subPasta ? resolveSafePath(subPasta) : projectRoot;
+  const targetDir = (subPasta && typeof subPasta === 'string' && subPasta.trim())
+    ? resolveSafePath(subPasta)
+    : projectRoot;
+
   if (!fs.existsSync(targetDir) || !fs.statSync(targetDir).isDirectory()) {
     throw new Error(`Diretório de busca não encontrado: ${subPasta || 'raiz'}`);
   }
@@ -210,7 +252,7 @@ function searchInCode(termo, subPasta = '', extensao = '.php') {
           if (!content.toLowerCase().includes(termLower)) continue;
 
           const lines = content.split(/\r?\n/);
-          const relFile = path.relative(projectRoot, fullPath).replace(/\\/g, '/');
+          const relFile = path.relative(targetDir, fullPath).replace(/\\/g, '/');
 
           for (let i = 0; i < lines.length; i++) {
             if (results.length >= 60) break;
@@ -224,7 +266,7 @@ function searchInCode(termo, subPasta = '', extensao = '.php') {
   }
 
   scanSearch(targetDir);
-  return results;
+  return { targetDir, results };
 }
 
 /**
@@ -302,6 +344,16 @@ export function initMcp(app, gateway) {
       pathOk = false;
     }
 
+    // Se o caminho configurado não existir, mas o defaultProjectRoot existir, usa defaultProjectRoot como base
+    if (!pathOk) {
+      try {
+        if (fs.existsSync(defaultProjectRoot) && fs.statSync(defaultProjectRoot).isDirectory()) {
+          confPath = defaultProjectRoot;
+          pathOk = true;
+        }
+      } catch (e) {}
+    }
+
     const prev = localModeEnabled;
     const prevRoot = projectRoot;
     localModeEnabled = Boolean(toggle && pathOk);
@@ -324,6 +376,94 @@ export function initMcp(app, gateway) {
 
   // Mapa de sessões ativas: sessionId -> { transport, server, userKey, keepAliveTimer }
   const activeSessions = new Map();
+
+  // ---------------------------------------------------------------------------
+  // JOBS ASSÍNCRONOS do executar_subagente.
+  // O subagente roda em BACKGROUND no servidor; a chamada MCP retorna na hora com
+  // um job_id. O cliente busca o resultado depois com 'consultar_resultado'.
+  // Motivo: o cliente MCP (Claude Desktop/Code) tem um timeout de tool-call que
+  // NÃO é resetado por keepalive SSE (comprovado em diagnóstico: socket vivo 4min,
+  // mas o cliente abortou mesmo assim, e progressToken vinha null). Segurar a
+  // chamada aberta nunca vence esse teto — então não seguramos mais.
+  // jobId -> { id, status:'running'|'done'|'error', resultText, errorText, modelo, startedAt, finishedAt, userId }
+  const subagentJobs = new Map();
+  const SUBAGENT_JOB_TTL_MS = 30 * 60 * 1000; // guarda o resultado por 30 min após terminar
+
+  function cleanupSubagentJobs() {
+    const now = Date.now();
+    for (const [id, job] of subagentJobs) {
+      const ref = job.finishedAt || job.startedAt;
+      if (now - ref > SUBAGENT_JOB_TTL_MS) subagentJobs.delete(id);
+    }
+  }
+  setInterval(cleanupSubagentJobs, 5 * 60 * 1000);
+
+  // Enfileira e dispara o subagente em background. Retorna o job imediatamente.
+  function startSubagentJob(args, userKey) {
+    cleanupSubagentJobs();
+    const jobId = `sub_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
+    const job = {
+      id: jobId,
+      status: 'running',
+      resultText: null,
+      errorText: null,
+      modelo: args?.modelo || null,
+      startedAt: Date.now(),
+      finishedAt: null,
+      userId: userKey?.user_id ?? null
+    };
+    subagentJobs.set(jobId, job);
+
+    // NÃO dá await: a chamada MCP retorna já com o job_id.
+    runSubagent({
+      prompt: args?.prompt || '',
+      modelo: args?.modelo,
+      system_prompt: args?.system_prompt,
+      arquivos: args?.arquivos,
+      conteudos: args?.conteudos,
+      max_tokens: args?.max_tokens,
+      temperature: args?.temperature,
+      userKey
+    }).then((replyText) => {
+      job.status = 'done';
+      job.resultText = replyText || '';
+      job.finishedAt = Date.now();
+    }).catch((err) => {
+      job.status = 'error';
+      job.errorText = err?.message || String(err);
+      job.finishedAt = Date.now();
+      console.error('[MCP Subagente Job Error]:', job.errorText);
+    });
+
+    return job;
+  }
+
+  // Texto de enfileiramento (resposta imediata do executar_subagente).
+  function subagentQueuedText(job) {
+    return `🚀 Subagente iniciado em background.\n\n` +
+      `job_id: ${job.id}\n` +
+      `modelo: ${job.modelo || '(padrão)'}\n\n` +
+      `A geração pode levar de segundos a minutos. Chame a tool "consultar_resultado" com ` +
+      `job_id="${job.id}" para pegar o resultado. Enquanto o status vier "running", espere alguns ` +
+      `segundos e consulte de novo — o resultado fica disponível por 30 min depois de pronto.`;
+  }
+
+  // Resposta da consultar_resultado: { isError, text }.
+  function subagentResultText(jobId) {
+    const job = subagentJobs.get(jobId);
+    if (!job) {
+      return { isError: true, text: `Job "${jobId}" não encontrado. Ou expirou (resultado guardado por 30 min) ou o gateway foi reiniciado. Rode o executar_subagente de novo.` };
+    }
+    if (job.status === 'running') {
+      const elapsed = Math.round((Date.now() - job.startedAt) / 1000);
+      return { isError: false, text: `⏳ Ainda processando (job ${job.id}, ${elapsed}s decorridos). Chame "consultar_resultado" com job_id="${job.id}" de novo em alguns segundos.` };
+    }
+    const secs = Math.round(((job.finishedAt || Date.now()) - job.startedAt) / 1000);
+    if (job.status === 'error') {
+      return { isError: true, text: `Erro ao executar subagente (job ${job.id}, ${secs}s): ${job.errorText}` };
+    }
+    return { isError: false, text: job.resultText || '(resposta vazia)' };
+  }
 
   // Helper para extrair API Key de headers ou query param
   async function extractAndAuth(req) {
@@ -588,109 +728,42 @@ export function initMcp(app, gateway) {
         max_tokens: z.number().optional().describe('Limite de tokens de saída (padrão 16384, máx 65536)'),
         temperature: z.number().optional().describe('Criatividade de 0 a 2 (padrão 0.7)')
       },
-      async ({ prompt, modelo, system_prompt, arquivos, conteudos, max_tokens, temperature }, extra) => {
-        let progressHeartbeatTimer = null;
+      async ({ prompt, modelo, system_prompt, arquivos, conteudos, max_tokens, temperature }) => {
+        // Dispara em BACKGROUND e devolve o job_id na hora. O cliente busca o
+        // resultado com 'consultar_resultado' — não seguramos a conexão aberta,
+        // porque keepalive não reseta o timeout de tool-call do cliente MCP.
         try {
-          const progressToken =
-            extra?._meta?.progressToken ??
-            extra?.progressToken ??
-            extra?.params?._meta?.progressToken ??
-            null;
-
-          let charCount = 0;
-          let thinkingCount = 0;
-          let heartbeatCount = 0;
-          let lastReported = 0;
-
-          const emitProgress = (progressVal, totalVal = 100) => {
-            if (progressToken !== null && progressToken !== undefined) {
-              try {
-                server.server.notification({
-                  method: 'notifications/progress',
-                  params: {
-                    progressToken: progressToken,
-                    progress: progressVal,
-                    total: totalVal
-                  }
-                }).catch(() => {});
-              } catch (e) {}
-            }
-            // Envia keepalive SSE na conexão HTTP para evitar timeout em proxies/gateways intermediários
-            if (res && !res.writableEnded && !res.destroyed) {
-              try {
-                res.write(': keepalive-progress\n\n');
-              } catch (e) {}
-            }
-          };
-
-          // 1. Notifica o início da execução imediatamente
-          emitProgress(1, 100);
-
-          // 2. Heartbeat de progresso periódico a cada 2.5 segundos
-          // Impede timeout de 60s em clientes MCP (Claude Code, Cline, Cursor, SDK) mesmo durante
-          // raciocínio interno prolongado (Claude Opus Thinking, Gemini Thinking, DeepSeek R1)
-          progressHeartbeatTimer = setInterval(() => {
-            heartbeatCount++;
-            const virtualProgress = charCount > 0
-              ? Math.max(charCount, Math.min(95, 5 + heartbeatCount * 2))
-              : Math.min(95, 2 + Math.floor(heartbeatCount * 1.5));
-            emitProgress(virtualProgress, 100);
-          }, 2500);
-
-          const progressCallback = (info) => {
-            const now = Date.now();
-            if (typeof info === 'number') {
-              charCount = info;
-            } else if (info && typeof info === 'object') {
-              if (info.length) charCount = info.length;
-              if (info.type === 'thinking') thinkingCount++;
-            }
-            if (now - lastReported > 2000) {
-              lastReported = now;
-              emitProgress(charCount || (5 + heartbeatCount * 2), 100);
-            }
-          };
-
-          const replyText = await runSubagent({
-            prompt,
-            modelo,
-            system_prompt,
-            arquivos,
-            conteudos,
-            max_tokens,
-            temperature,
-            userKey,
-            progressCallback,
-            abortSignal: extra?.signal
-          });
-
-          // Notifica 100% concluído
-          emitProgress(100, 100);
-
-          return {
-            content: [
-              {
-                type: 'text',
-                text: replyText
-              }
-            ]
-          };
+          const job = startSubagentJob(
+            { prompt, modelo, system_prompt, arquivos, conteudos, max_tokens, temperature },
+            userKey
+          );
+          return { content: [{ type: 'text', text: subagentQueuedText(job) }] };
         } catch (subErr) {
           console.error('[MCP Subagente Error]:', subErr.message);
           return {
             isError: true,
-            content: [
-              {
-                type: 'text',
-                text: `Erro ao executar subagente na API: ${subErr.message}`
-              }
-            ]
+            content: [{ type: 'text', text: `Erro ao iniciar subagente: ${subErr.message}` }]
           };
-        } finally {
-          if (progressHeartbeatTimer) {
-            clearInterval(progressHeartbeatTimer);
-          }
         }
+      }
+    );
+
+    // -------------------------------------------------------------
+    // TOOL: Consultar Resultado (busca o retorno de um subagente em background)
+    // -------------------------------------------------------------
+    server.tool(
+      'consultar_resultado',
+      'Busca o resultado de um executar_subagente que roda em background. Passe o job_id retornado. Enquanto o status for "running", espere alguns segundos e consulte de novo.',
+      {
+        job_id: z.string().describe('O job_id retornado pelo executar_subagente')
+      },
+      async ({ job_id }) => {
+        const jobId = String(job_id || '').trim();
+        if (!jobId) {
+          return { isError: true, content: [{ type: 'text', text: 'Informe job_id (o id retornado pelo executar_subagente).' }] };
+        }
+        const r = subagentResultText(jobId);
+        return { ...(r.isError ? { isError: true } : {}), content: [{ type: 'text', text: r.text }] };
       }
     );
 
@@ -763,9 +836,9 @@ export function initMcp(app, gateway) {
     // -------------------------------------------------------------
     server.tool(
       'ler_codigo_arquivo',
-      'Lê o código-fonte de um arquivo do projeto no disco com numeração de linhas. Use para inspecionar classes, models, migrations ou controllers.' + DESC_TOOL_DISCO,
+      'Lê o código-fonte de um arquivo no disco com numeração de linhas. Aceita caminho relativo ou absoluto de qualquer projeto na máquina.' + DESC_TOOL_DISCO,
       {
-        caminho: z.string().describe('Caminho relativo do arquivo no projeto (ex: "app/Models/Fidelidade.php", "admin/accounts.php", "database.sql")'),
+        caminho: z.string().describe('Caminho relativo (ex: "app/Models/Fidelidade.php", "admin/accounts.php") ou absoluto de qualquer projeto (ex: "C:/xampp/htdocs/saas/app/Models/User.php")'),
         linha_inicio: z.number().optional().describe('Linha inicial (padrão: 1)'),
         linha_fim: z.number().optional().describe('Linha final (opcional, padrão: exibe até 500 linhas)')
       },
@@ -793,9 +866,9 @@ export function initMcp(app, gateway) {
     // -------------------------------------------------------------
     server.tool(
       'listar_arquivos_projeto',
-      'Lista pastas e arquivos do projeto para descobrir onde estão localizados os módulos, migrations e classes.' + DESC_TOOL_DISCO,
+      'Lista pastas e arquivos de qualquer diretório ou projeto na máquina.' + DESC_TOOL_DISCO,
       {
-        pasta: z.string().optional().describe('Subpasta para listar (ex: "app/Models", "database", "admin"). Vazio lista a raiz.'),
+        pasta: z.string().optional().describe('Diretório para listar. Pode ser subpasta (ex: "app/Models", "database") ou caminho absoluto de qualquer projeto (ex: "C:/xampp/htdocs/saas"). Se vazio, lista o projeto padrão.'),
         extensao: z.string().optional().describe('Filtrar por extensão (ex: ".php", ".js", ".sql")'),
         recursivo: z.boolean().optional().describe('Se deve listar recursivamente (padrão: true para subpastas, false para raiz)')
       },
@@ -805,11 +878,11 @@ export function initMcp(app, gateway) {
           return { isError: true, content: [{ type: 'text', text: DISK_OFF_MSG }] };
         }
         try {
-          const files = listProjectFiles(pasta, extensao, recursivo);
+          const { targetDir, results: files } = listProjectFiles(pasta, extensao, recursivo);
           return {
             content: [{
               type: 'text',
-              text: `Arquivos encontrados (${files.length} itens):\n\n${files.join('\n') || 'Nenhum arquivo encontrado com esses filtros.'}`
+              text: `Diretório: ${targetDir}\nArquivos encontrados (${files.length} itens):\n\n${files.join('\n') || 'Nenhum arquivo encontrado com esses filtros.'}`
             }]
           };
         } catch (err) {
@@ -826,10 +899,10 @@ export function initMcp(app, gateway) {
     // -------------------------------------------------------------
     server.tool(
       'buscar_no_codigo',
-      'Pesquisa termos, nomes de tabelas, classes ou métodos em todo o código-fonte do projeto.' + DESC_TOOL_DISCO,
+      'Pesquisa termos, nomes de tabelas, classes ou métodos no código-fonte de qualquer projeto ou pasta.' + DESC_TOOL_DISCO,
       {
         termo: z.string().describe('Termo, tabela ou nome de classe a buscar (ex: "Fidelidade", "ordens_servico", "calculatePoints")'),
-        pasta: z.string().optional().describe('Subpasta onde buscar (ex: "app", "admin"). Vazio busca no projeto todo.'),
+        pasta: z.string().optional().describe('Diretório onde buscar. Subpasta relativa ou caminho absoluto de qualquer projeto (ex: "C:/xampp/htdocs/saas"). Se vazio, busca no projeto padrão.'),
         extensao: z.string().optional().describe('Extensão dos arquivos (padrão: ".php")')
       },
       async ({ termo, pasta, extensao }) => {
@@ -838,13 +911,13 @@ export function initMcp(app, gateway) {
           return { isError: true, content: [{ type: 'text', text: DISK_OFF_MSG }] };
         }
         try {
-          const results = searchInCode(termo, pasta, extensao);
+          const { targetDir, results } = searchInCode(termo, pasta, extensao);
           return {
             content: [{
               type: 'text',
               text: results.length > 0
-                ? `Ocorrências de "${termo}" (${results.length} resultados encontrados):\n\n${results.join('\n')}`
-                : `Nenhuma ocorrência encontrada para o termo "${termo}".`
+                ? `Diretório: ${targetDir}\nOcorrências de "${termo}" (${results.length} resultados encontrados):\n\n${results.join('\n')}`
+                : `Diretório: ${targetDir}\nNenhuma ocorrência encontrada para o termo "${termo}".`
             }]
           };
         } catch (err) {
@@ -1044,6 +1117,17 @@ export function initMcp(app, gateway) {
                 }
               },
               {
+                name: 'consultar_resultado',
+                description: 'Busca o resultado de um executar_subagente que roda em background. Passe o job_id retornado. Enquanto o status for "running", espere alguns segundos e consulte de novo.',
+                inputSchema: {
+                  type: 'object',
+                  properties: {
+                    job_id: { type: 'string', description: 'O job_id retornado pelo executar_subagente' }
+                  },
+                  required: ['job_id']
+                }
+              },
+              {
                 name: 'listar_modelos_api',
                 description: 'Lista os modelos de IA disponíveis no painel',
                 inputSchema: { type: 'object', properties: {} }
@@ -1175,14 +1259,14 @@ export function initMcp(app, gateway) {
           });
         }
         try {
-          const files = listProjectFiles(args.pasta, args.extensao, args.recursivo);
+          const { targetDir, results: files } = listProjectFiles(args.pasta, args.extensao, args.recursivo);
           return res.status(200).json({
             jsonrpc: '2.0',
             id: msgId,
             result: {
               content: [{
                 type: 'text',
-                text: `Arquivos encontrados (${files.length} itens):\n\n${files.join('\n') || 'Nenhum arquivo encontrado.'}`
+                text: `Diretório: ${targetDir}\nArquivos encontrados (${files.length} itens):\n\n${files.join('\n') || 'Nenhum arquivo encontrado.'}`
               }]
             }
           });
@@ -1206,7 +1290,7 @@ export function initMcp(app, gateway) {
           });
         }
         try {
-          const results = searchInCode(args.termo, args.pasta, args.extensao);
+          const { targetDir, results } = searchInCode(args.termo, args.pasta, args.extensao);
           return res.status(200).json({
             jsonrpc: '2.0',
             id: msgId,
@@ -1214,8 +1298,8 @@ export function initMcp(app, gateway) {
               content: [{
                 type: 'text',
                 text: results.length > 0
-                  ? `Ocorrências de "${args.termo}" (${results.length} resultados):\n\n${results.join('\n')}`
-                  : `Nenhuma ocorrência encontrada para o termo "${args.termo}".`
+                  ? `Diretório: ${targetDir}\nOcorrências de "${args.termo}" (${results.length} resultados):\n\n${results.join('\n')}`
+                  : `Diretório: ${targetDir}\nNenhuma ocorrência encontrada para o termo "${args.termo}".`
               }]
             }
           });
@@ -1232,116 +1316,14 @@ export function initMcp(app, gateway) {
       }
 
       if (toolName === 'executar_subagente') {
-        const progressToken = body?.params?._meta?.progressToken ?? null;
-        const acceptsSse = String(req.headers['accept'] || '').includes('text/event-stream');
-
-        // Caminho SSE (Streamable HTTP): mantém a conexão alimentada com heartbeat durante
-        // gerações longas (thinking profundo / max_tokens grande). Sem isto, o cliente MCP
-        // (Claude Desktop/Code) aborta por volta de 60s de silêncio — a resposta única em JSON
-        // só chega no fim. Espelha o heartbeat do caminho SSE legado (server.tool acima).
-        if (acceptsSse) {
-          res.status(200);
-          res.setHeader('Content-Type', 'text/event-stream; charset=utf-8');
-          res.setHeader('Cache-Control', 'no-cache, no-transform');
-          res.setHeader('X-Accel-Buffering', 'no');
-          if (typeof res.flushHeaders === 'function') res.flushHeaders();
-
-          const sendEvent = (obj) => {
-            if (res.writableEnded || res.destroyed) return;
-            try { res.write(`event: message\ndata: ${JSON.stringify(obj)}\n\n`); } catch (e) {}
-          };
-          const sendKeepalive = (progressVal) => {
-            if (res.writableEnded || res.destroyed) return;
-            try { res.write(': keepalive\n\n'); } catch (e) {}
-            if (progressToken !== null && progressToken !== undefined) {
-              sendEvent({
-                jsonrpc: '2.0',
-                method: 'notifications/progress',
-                params: { progressToken, progress: progressVal, total: 100 }
-              });
-            }
-          };
-
-          // Aborta a geração se o cliente desconectar (não desperdiça cota/tokens).
-          const ac = new AbortController();
-          req.on('close', () => { try { ac.abort(); } catch (e) {} });
-
-          let charCount = 0;
-          let heartbeatCount = 0;
-          let lastReported = 0;
-          sendKeepalive(1);
-          const heartbeatTimer = setInterval(() => {
-            heartbeatCount++;
-            const virtualProgress = charCount > 0
-              ? Math.max(charCount, Math.min(95, 5 + heartbeatCount * 2))
-              : Math.min(95, 2 + Math.floor(heartbeatCount * 1.5));
-            sendKeepalive(virtualProgress);
-          }, 2500);
-
-          const progressCallback = (info) => {
-            const now = Date.now();
-            if (typeof info === 'number') charCount = info;
-            else if (info && typeof info === 'object' && info.length) charCount = info.length;
-            if (now - lastReported > 2000) {
-              lastReported = now;
-              sendKeepalive(charCount || (5 + heartbeatCount * 2));
-            }
-          };
-
-          try {
-            const replyText = await runSubagent({
-              prompt: args.prompt || '',
-              modelo: args.modelo,
-              system_prompt: args.system_prompt,
-              arquivos: args.arquivos,
-              conteudos: args.conteudos,
-              max_tokens: args.max_tokens,
-              temperature: args.temperature,
-              userKey,
-              progressCallback,
-              abortSignal: ac.signal
-            });
-            sendEvent({
-              jsonrpc: '2.0',
-              id: msgId,
-              result: { content: [{ type: 'text', text: replyText }] }
-            });
-          } catch (subErr) {
-            console.error('[MCP Direct HTTP Error]:', subErr.message);
-            sendEvent({
-              jsonrpc: '2.0',
-              id: msgId,
-              result: {
-                isError: true,
-                content: [{ type: 'text', text: `Erro ao executar subagente: ${subErr.message}` }]
-              }
-            });
-          } finally {
-            clearInterval(heartbeatTimer);
-            if (!res.writableEnded) { try { res.end(); } catch (e) {} }
-          }
-          return;
-        }
-
-        // Fallback: cliente não aceita SSE → resposta JSON única (sem heartbeat; só serve p/ geração curta).
+        // Dispara em BACKGROUND e responde na hora com o job_id (ver startSubagentJob).
+        // Não segura a conexão aberta: keepalive não vence o timeout do cliente MCP.
         try {
-          const replyText = await runSubagent({
-            prompt: args.prompt || '',
-            modelo: args.modelo,
-            system_prompt: args.system_prompt,
-            arquivos: args.arquivos,
-            conteudos: args.conteudos,
-            max_tokens: args.max_tokens,
-            temperature: args.temperature,
-            userKey
-          });
-
+          const job = startSubagentJob(args, userKey);
           return res.status(200).json({
             jsonrpc: '2.0',
             id: msgId,
-            result: {
-              content: [{ type: 'text', text: replyText }]
-            }
+            result: { content: [{ type: 'text', text: subagentQueuedText(job) }] }
           });
         } catch (subErr) {
           console.error('[MCP Direct HTTP Error]:', subErr.message);
@@ -1350,10 +1332,26 @@ export function initMcp(app, gateway) {
             id: msgId,
             result: {
               isError: true,
-              content: [{ type: 'text', text: `Erro ao executar subagente: ${subErr.message}` }]
+              content: [{ type: 'text', text: `Erro ao iniciar subagente: ${subErr.message}` }]
             }
           });
         }
+      }
+
+      if (toolName === 'consultar_resultado') {
+        const jobId = String(args.job_id || args.jobId || '').trim();
+        if (!jobId) {
+          return res.status(200).json({
+            jsonrpc: '2.0', id: msgId,
+            result: { isError: true, content: [{ type: 'text', text: 'Informe job_id (o id retornado pelo executar_subagente).' }] }
+          });
+        }
+        const r = subagentResultText(jobId);
+        return res.status(200).json({
+          jsonrpc: '2.0',
+          id: msgId,
+          result: { ...(r.isError ? { isError: true } : {}), content: [{ type: 'text', text: r.text }] }
+        });
       }
 
       return res.status(404).json({ jsonrpc: '2.0', id: msgId, error: { code: -32601, message: `Tool not found: ${toolName}` } });
