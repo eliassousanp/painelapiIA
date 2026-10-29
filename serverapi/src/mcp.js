@@ -1232,6 +1232,98 @@ export function initMcp(app, gateway) {
       }
 
       if (toolName === 'executar_subagente') {
+        const progressToken = body?.params?._meta?.progressToken ?? null;
+        const acceptsSse = String(req.headers['accept'] || '').includes('text/event-stream');
+
+        // Caminho SSE (Streamable HTTP): mantém a conexão alimentada com heartbeat durante
+        // gerações longas (thinking profundo / max_tokens grande). Sem isto, o cliente MCP
+        // (Claude Desktop/Code) aborta por volta de 60s de silêncio — a resposta única em JSON
+        // só chega no fim. Espelha o heartbeat do caminho SSE legado (server.tool acima).
+        if (acceptsSse) {
+          res.status(200);
+          res.setHeader('Content-Type', 'text/event-stream; charset=utf-8');
+          res.setHeader('Cache-Control', 'no-cache, no-transform');
+          res.setHeader('X-Accel-Buffering', 'no');
+          if (typeof res.flushHeaders === 'function') res.flushHeaders();
+
+          const sendEvent = (obj) => {
+            if (res.writableEnded || res.destroyed) return;
+            try { res.write(`event: message\ndata: ${JSON.stringify(obj)}\n\n`); } catch (e) {}
+          };
+          const sendKeepalive = (progressVal) => {
+            if (res.writableEnded || res.destroyed) return;
+            try { res.write(': keepalive\n\n'); } catch (e) {}
+            if (progressToken !== null && progressToken !== undefined) {
+              sendEvent({
+                jsonrpc: '2.0',
+                method: 'notifications/progress',
+                params: { progressToken, progress: progressVal, total: 100 }
+              });
+            }
+          };
+
+          // Aborta a geração se o cliente desconectar (não desperdiça cota/tokens).
+          const ac = new AbortController();
+          req.on('close', () => { try { ac.abort(); } catch (e) {} });
+
+          let charCount = 0;
+          let heartbeatCount = 0;
+          let lastReported = 0;
+          sendKeepalive(1);
+          const heartbeatTimer = setInterval(() => {
+            heartbeatCount++;
+            const virtualProgress = charCount > 0
+              ? Math.max(charCount, Math.min(95, 5 + heartbeatCount * 2))
+              : Math.min(95, 2 + Math.floor(heartbeatCount * 1.5));
+            sendKeepalive(virtualProgress);
+          }, 2500);
+
+          const progressCallback = (info) => {
+            const now = Date.now();
+            if (typeof info === 'number') charCount = info;
+            else if (info && typeof info === 'object' && info.length) charCount = info.length;
+            if (now - lastReported > 2000) {
+              lastReported = now;
+              sendKeepalive(charCount || (5 + heartbeatCount * 2));
+            }
+          };
+
+          try {
+            const replyText = await runSubagent({
+              prompt: args.prompt || '',
+              modelo: args.modelo,
+              system_prompt: args.system_prompt,
+              arquivos: args.arquivos,
+              conteudos: args.conteudos,
+              max_tokens: args.max_tokens,
+              temperature: args.temperature,
+              userKey,
+              progressCallback,
+              abortSignal: ac.signal
+            });
+            sendEvent({
+              jsonrpc: '2.0',
+              id: msgId,
+              result: { content: [{ type: 'text', text: replyText }] }
+            });
+          } catch (subErr) {
+            console.error('[MCP Direct HTTP Error]:', subErr.message);
+            sendEvent({
+              jsonrpc: '2.0',
+              id: msgId,
+              result: {
+                isError: true,
+                content: [{ type: 'text', text: `Erro ao executar subagente: ${subErr.message}` }]
+              }
+            });
+          } finally {
+            clearInterval(heartbeatTimer);
+            if (!res.writableEnded) { try { res.end(); } catch (e) {} }
+          }
+          return;
+        }
+
+        // Fallback: cliente não aceita SSE → resposta JSON única (sem heartbeat; só serve p/ geração curta).
         try {
           const replyText = await runSubagent({
             prompt: args.prompt || '',
