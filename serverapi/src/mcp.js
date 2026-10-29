@@ -9,10 +9,39 @@ import { fileURLToPath } from 'url';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-// Diretório raiz do projeto (suporta WORKSPACE_DIR no .env ou relativo a serverapi/src)
-const defaultProjectRoot = process.env.WORKSPACE_DIR 
-  ? path.resolve(process.env.WORKSPACE_DIR) 
+// Raiz padrão (fallback) do projeto — usada quando nenhum caminho é configurado.
+const defaultProjectRoot = process.env.WORKSPACE_DIR
+  ? path.resolve(process.env.WORKSPACE_DIR)
   : path.resolve(__dirname, '../../');
+
+// -------------------------------------------------------------
+// MODO DE EXECUÇÃO: LOCAL vs REMOTO (VPS)
+// No gateway LOCAL, as tools de disco (ler_codigo_arquivo, arquivos, etc.) leem o
+// projeto do usuário. No gateway REMOTO/VPS elas só enxergam o disco da VPS, NÃO o
+// projeto do cliente — então o cliente deve enviar o código via "conteudos".
+//
+// O modo é controlado pelo painel SuperAdmin (tabela `settings`):
+//   - mcp_local_mode   = '1' para ligar a leitura de disco (toggle)
+//   - mcp_workspace_dir= caminho do projeto a ser lido (ex: C:\xampp\htdocs\meuprojeto)
+// Fallback: variáveis de ambiente MCP_LOCAL e WORKSPACE_DIR.
+//
+// SEGURANÇA/ROBUSTEZ: o modo local só é ativado se o caminho configurado EXISTIR
+// nesta máquina. Assim, mesmo que o toggle esteja ligado num banco compartilhado,
+// a VPS (que não tem a pasta local) permanece em modo REMOTO e não tenta ler disco à toa.
+// -------------------------------------------------------------
+const ENV_LOCAL_FALLBACK = /^(1|true|local|yes|on)$/i.test(String(process.env.MCP_LOCAL || '').trim());
+
+// Estado de execução resolvido em runtime (atualizado a partir do SuperAdmin/env).
+let localModeEnabled = false;   // leitura de disco está realmente ativa nesta máquina?
+let projectRoot = defaultProjectRoot;   // raiz efetiva que as tools de disco enxergam
+
+// Descrições neutras — sempre corretas independente do modo (a IA cliente decide sozinha).
+const DESC_ARQUIVOS = 'Caminhos para o subagente LER DO DISCO DO GATEWAY. Só funciona se o gateway estiver em modo LOCAL (ativado no painel SuperAdmin) e os arquivos existirem nessa máquina. Em gateway remoto/VPS NÃO use isto — envie o código pelo parâmetro "conteudos". Ex: ["revenda.php", "admin/accounts.php"]';
+
+const DESC_TOOL_DISCO = ' (lê o disco do gateway; ativo só em modo LOCAL definido no SuperAdmin — em gateway VPS/remoto use "conteudos" no executar_subagente)';
+
+// Mensagem padrão quando uma tool de disco é chamada em gateway remoto/VPS.
+const DISK_OFF_MSG = 'Leitura de disco DESLIGADA neste gateway (modo remoto/VPS). Esta ferramenta só funciona em modo LOCAL — ative no painel SuperAdmin (toggle "Modo Local do MCP" + caminho do projeto). Para analisar código agora, use a ferramenta executar_subagente enviando o código no parâmetro "conteudos" (a IA cliente lê o arquivo localmente e envia o conteúdo).';
 
 const IGNORED_DIRS = new Set([
   'node_modules',
@@ -36,7 +65,7 @@ const BLOCKED_FILES = new Set([
 /**
  * Valida e resolve caminho seguro dentro do projeto (impede Path Traversal e vazamento de chaves)
  */
-function resolveSafePath(userPath, baseDir = defaultProjectRoot) {
+function resolveSafePath(userPath, baseDir = projectRoot) {
   if (!userPath || typeof userPath !== 'string') {
     throw new Error('Caminho de arquivo inválido ou não informado.');
   }
@@ -89,12 +118,12 @@ function readCodeFile(caminho, linhaInicio = 1, linhaFim = null) {
  * Varre e lista os arquivos do projeto com filtros
  */
 function listProjectFiles(subPasta = '', extensao = '', recursivo = null) {
-  const targetDir = subPasta ? resolveSafePath(subPasta) : defaultProjectRoot;
+  const targetDir = subPasta ? resolveSafePath(subPasta) : projectRoot;
   if (!fs.existsSync(targetDir) || !fs.statSync(targetDir).isDirectory()) {
     throw new Error(`Diretório não encontrado: ${subPasta || 'raiz'}`);
   }
 
-  const isRoot = path.normalize(targetDir) === path.normalize(defaultProjectRoot);
+  const isRoot = path.normalize(targetDir) === path.normalize(projectRoot);
   const shouldRecurse = recursivo !== null ? Boolean(recursivo) : !isRoot;
   const extFilter = extensao ? extensao.toLowerCase() : '';
 
@@ -118,7 +147,7 @@ function listProjectFiles(subPasta = '', extensao = '', recursivo = null) {
 
       if (ent.isDirectory()) {
         if (IGNORED_DIRS.has(name) || name.startsWith('.')) continue;
-        const relDir = path.relative(defaultProjectRoot, fullPath).replace(/\\/g, '/');
+        const relDir = path.relative(projectRoot, fullPath).replace(/\\/g, '/');
         results.push(`📁 ${relDir}/`);
         if (shouldRecurse) {
           scan(fullPath, depth + 1);
@@ -126,7 +155,7 @@ function listProjectFiles(subPasta = '', extensao = '', recursivo = null) {
       } else if (ent.isFile()) {
         if (BLOCKED_FILES.has(name.toLowerCase()) || name.endsWith('.pem') || name.endsWith('.key')) continue;
         if (extFilter && !name.toLowerCase().endsWith(extFilter)) continue;
-        const relFile = path.relative(defaultProjectRoot, fullPath).replace(/\\/g, '/');
+        const relFile = path.relative(projectRoot, fullPath).replace(/\\/g, '/');
         results.push(`📄 ${relFile}`);
       }
     }
@@ -144,7 +173,7 @@ function searchInCode(termo, subPasta = '', extensao = '.php') {
     throw new Error('Informe um termo de busca válido.');
   }
 
-  const targetDir = subPasta ? resolveSafePath(subPasta) : defaultProjectRoot;
+  const targetDir = subPasta ? resolveSafePath(subPasta) : projectRoot;
   if (!fs.existsSync(targetDir) || !fs.statSync(targetDir).isDirectory()) {
     throw new Error(`Diretório de busca não encontrado: ${subPasta || 'raiz'}`);
   }
@@ -181,7 +210,7 @@ function searchInCode(termo, subPasta = '', extensao = '.php') {
           if (!content.toLowerCase().includes(termLower)) continue;
 
           const lines = content.split(/\r?\n/);
-          const relFile = path.relative(defaultProjectRoot, fullPath).replace(/\\/g, '/');
+          const relFile = path.relative(projectRoot, fullPath).replace(/\\/g, '/');
 
           for (let i = 0; i < lines.length; i++) {
             if (results.length >= 60) break;
@@ -199,6 +228,35 @@ function searchInCode(termo, subPasta = '', extensao = '.php') {
 }
 
 /**
+ * Executa uma função assíncrona com re-tentativas e backoff exponencial.
+ * Só retenta erros transitórios (rede, 429/5xx, timeout, provider sobrecarregado).
+ * Erros definitivos (saldo, autenticação, validação) falham na hora.
+ */
+async function withRetry(fn, { retries = 2, baseDelay = 800, label = 'operação' } = {}) {
+  let lastErr;
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    try {
+      return await fn();
+    } catch (err) {
+      lastErr = err;
+      const msg = (err && err.message) ? err.message : String(err);
+
+      // Erros definitivos: não adianta retentar
+      if (/saldo|autentic|api key|inválid|unauthorized|forbidden|quota/i.test(msg)) break;
+
+      // Erros transitórios: vale retentar
+      const transient = /429|5\d\d|timeout|etimedout|econnreset|enotfound|socket hang up|overloaded|rate.?limit|temporar|unavailable|fetch failed/i.test(msg);
+      if (!transient || attempt === retries) break;
+
+      const delay = baseDelay * Math.pow(2, attempt);
+      console.warn(`[MCP retry] ${label}: tentativa ${attempt + 1}/${retries + 1} falhou (${msg}). Retentando em ${delay}ms...`);
+      await new Promise(r => setTimeout(r, delay));
+    }
+  }
+  throw lastErr;
+}
+
+/**
  * Módulo MCP (Model Context Protocol) Nativo com Transporte SSE
  * Permite que o Claude Code (em sua conta Pro ou qualquer cliente MCP)
  * utilize a API do Painel como um orquestrador de subagentes.
@@ -213,6 +271,56 @@ export function initMcp(app, gateway) {
     logUsage,
     pool
   } = gateway;
+
+  // -------------------------------------------------------------
+  // Resolve o modo LOCAL/REMOTO a partir do painel SuperAdmin (tabela `settings`),
+  // com fallback para variáveis de ambiente. Só liga a leitura de disco se o
+  // caminho configurado existir NESTA máquina (a VPS continua remota automaticamente).
+  // -------------------------------------------------------------
+  async function refreshMcpMode() {
+    let toggle = ENV_LOCAL_FALLBACK;
+    let confPath = defaultProjectRoot;
+    try {
+      const [rows] = await pool.query(
+        "SELECT setting_key, setting_value FROM settings WHERE setting_key IN ('mcp_local_mode', 'mcp_workspace_dir')"
+      );
+      for (const r of rows) {
+        if (r.setting_key === 'mcp_local_mode') {
+          toggle = /^(1|true|on|yes)$/i.test(String(r.setting_value || '').trim());
+        } else if (r.setting_key === 'mcp_workspace_dir' && String(r.setting_value || '').trim()) {
+          confPath = path.resolve(String(r.setting_value).trim());
+        }
+      }
+    } catch (e) {
+      // settings indisponível → mantém fallback de ambiente
+    }
+
+    let pathOk = false;
+    try {
+      pathOk = fs.existsSync(confPath) && fs.statSync(confPath).isDirectory();
+    } catch (e) {
+      pathOk = false;
+    }
+
+    const prev = localModeEnabled;
+    const prevRoot = projectRoot;
+    localModeEnabled = Boolean(toggle && pathOk);
+    projectRoot = localModeEnabled ? confPath : defaultProjectRoot;
+
+    if (prev !== localModeEnabled || prevRoot !== projectRoot) {
+      if (localModeEnabled) {
+        console.log(`📂 MCP Modo: LOCAL — leitura de disco ATIVA em ${projectRoot}`);
+      } else if (toggle && !pathOk) {
+        console.log(`📂 MCP Modo: REMOTO/VPS — toggle local ligado, mas o caminho "${confPath}" não existe nesta máquina. Clientes devem usar "conteudos".`);
+      } else {
+        console.log(`📂 MCP Modo: REMOTO/VPS — leitura de disco desligada. Clientes devem enviar código via "conteudos".`);
+      }
+    }
+  }
+
+  // Resolve agora e revalida a cada 30s (toggle no SuperAdmin passa a valer sem reiniciar).
+  refreshMcpMode();
+  setInterval(refreshMcpMode, 30 * 1000);
 
   // Mapa de sessões ativas: sessionId -> { transport, server, userKey, keepAliveTimer }
   const activeSessions = new Map();
@@ -252,7 +360,7 @@ export function initMcp(app, gateway) {
   /**
    * Executa a chamada do subagente com suporte a streaming contínuo e múltiplos fallbacks
    */
-  async function runSubagent({ prompt, modelo, system_prompt, arquivos, userKey, progressCallback, abortSignal }) {
+  async function runSubagent({ prompt, modelo, system_prompt, arquivos, conteudos, max_tokens, temperature, userKey, progressCallback, abortSignal }) {
     let rawModel = modelo;
     if (!rawModel) {
       try {
@@ -264,9 +372,30 @@ export function initMcp(app, gateway) {
     }
     if (!rawModel) rawModel = 'gemini-3.8-flash-medium';
 
-    // Se foram informados arquivos do projeto para o subagente analisar:
+    // Monta o contexto de código a partir de DUAS fontes:
     let fileContentsContext = '';
-    if (Array.isArray(arquivos) && arquivos.length > 0) {
+
+    // FONTE 1 (produto / qualquer cliente): conteúdo enviado DIRETO pela IA cliente.
+    // Funciona para qualquer projeto remoto, sem a VPS precisar acessar o disco do cliente.
+    // Aceita [{ caminho, conteudo }] ou objetos equivalentes.
+    if (Array.isArray(conteudos) && conteudos.length > 0) {
+      for (const item of conteudos) {
+        if (!item) continue;
+        const caminho = item.caminho || item.path || item.nome || 'arquivo';
+        const conteudo = typeof item === 'string' ? item : (item.conteudo || item.content || '');
+        if (!conteudo) continue;
+        const truncated = conteudo.length > 150000
+          ? conteudo.slice(0, 150000) + '\n... [conteúdo truncado para manter performance]'
+          : conteudo;
+        fileContentsContext += `\n\n=== ARQUIVO ENVIADO PELO CLIENTE: ${caminho} ===\n${truncated}\n=== FIM DO ARQUIVO ===`;
+      }
+    }
+
+    // FONTE 2 (disco): só lê se o gateway estiver em modo LOCAL (SuperAdmin).
+    // Em modo REMOTO/VPS não tenta ler à toa — orienta o cliente a usar "conteudos".
+    if (Array.isArray(arquivos) && arquivos.length > 0 && !localModeEnabled) {
+      fileContentsContext += `\n\n=== AVISO: leitura de disco está DESLIGADA neste gateway (modo remoto/VPS). Os ${arquivos.length} caminho(s) em "arquivos" foram ignorados. Para o subagente ver o código, reenvie pelo parâmetro "conteudos" (a IA cliente lê o arquivo localmente e manda o conteúdo). ===`;
+    } else if (Array.isArray(arquivos) && arquivos.length > 0) {
       for (const filePath of arquivos) {
         try {
           const safePath = resolveSafePath(filePath);
@@ -275,9 +404,9 @@ export function initMcp(app, gateway) {
             const truncated = content.length > 150000
               ? content.slice(0, 150000) + '\n... [conteúdo truncado para manter performance]'
               : content;
-            fileContentsContext += `\n\n=== ARQUIVO DO PROJETO: ${filePath} ===\n${truncated}\n=== FIM DO ARQUIVO ===`;
+            fileContentsContext += `\n\n=== ARQUIVO DO PROJETO (disco): ${filePath} ===\n${truncated}\n=== FIM DO ARQUIVO ===`;
           } else {
-            fileContentsContext += `\n\n=== AVISO: Arquivo "${filePath}" não encontrado no projeto. ===`;
+            fileContentsContext += `\n\n=== AVISO: Arquivo "${filePath}" não encontrado no disco do servidor. (Se o gateway roda na VPS, envie o conteúdo via parâmetro "conteudos".) ===`;
           }
         } catch (fErr) {
           fileContentsContext += `\n\n=== ERRO AO CARREGAR ARQUIVO "${filePath}": ${fErr.message} ===`;
@@ -303,6 +432,13 @@ export function initMcp(app, gateway) {
     if (system_prompt) systemParts.push(system_prompt);
     const finalSystemInstruction = systemParts.join('\n\n');
 
+    // Configuração de geração parametrizável (com limites seguros)
+    const genConfig = {
+      temperature: (typeof temperature === 'number' && temperature >= 0 && temperature <= 2) ? temperature : 0.7,
+      maxOutputTokens: (typeof max_tokens === 'number' && max_tokens > 0) ? Math.min(max_tokens, 65536) : 16384,
+      tools: []
+    };
+
     let replyText = '';
     let account = null;
 
@@ -311,7 +447,10 @@ export function initMcp(app, gateway) {
         ...(finalSystemInstruction ? [{ role: 'system', content: finalSystemInstruction }] : []),
         { role: 'user', content: finalPrompt }
       ];
-      const extResult = await executeExternalProvider(providerId, targetEngine, incomingMsgs, finalSystemInstruction, []);
+      const extResult = await withRetry(
+        () => executeExternalProvider(providerId, targetEngine, incomingMsgs, finalSystemInstruction, []),
+        { label: `provider externo (${rawModel})` }
+      );
       replyText = extResult.replyText;
     } else {
       // 1. Tenta executar via streaming contínuo para manter os dados fluindo em gerações longas
@@ -324,7 +463,7 @@ export function initMcp(app, gateway) {
             incomingContents,
             finalSystemInstruction,
             rawModel,
-            { temperature: 0.7, maxOutputTokens: 16384, tools: [] },
+            genConfig,
             (tokenChunk, toolCall, meta) => {
               if (tokenChunk) {
                 streamedText += tokenChunk;
@@ -349,12 +488,15 @@ export function initMcp(app, gateway) {
 
       // 2. Se o streaming não foi usado ou falhou, usa a execução padrão (com timeout estendido de 300s)
       if (!streamSucceeded) {
-        const { googleResp, account: acc } = await executeWithFallback(
-          targetEngine,
-          incomingContents,
-          finalSystemInstruction,
-          rawModel,
-          { temperature: 0.7, maxOutputTokens: 16384, tools: [] }
+        const { googleResp, account: acc } = await withRetry(
+          () => executeWithFallback(
+            targetEngine,
+            incomingContents,
+            finalSystemInstruction,
+            rawModel,
+            genConfig
+          ),
+          { label: `execução direta (${rawModel})` }
         );
         account = acc;
 
@@ -430,14 +572,20 @@ export function initMcp(app, gateway) {
     // -------------------------------------------------------------
     server.tool(
       'executar_subagente',
-      'Executa uma tarefa ou raciocínio complexo delegando para um subagente na API do Painel (ex: Claude Opus Thinking, Claude Sonnet, Gemini 3.8, etc.). Aceita uma lista de arquivos do projeto para ler e entender o código antes de responder!',
+      'Delega uma tarefa/raciocínio complexo a um subagente na API do Painel (Claude Opus Thinking, Sonnet, Gemini, etc.). Para o subagente analisar código, envie os arquivos pelo parâmetro "conteudos" (você lê localmente e manda o conteúdo — funciona em qualquer projeto). O parâmetro "arquivos" só lê o disco do próprio servidor.',
       {
         prompt: z.string().describe('Instrução clara e detalhada para o subagente executar'),
         modelo: z.string().optional().describe('Modelo da API para executar o subagente. Exemplos: claude-opus-5.5, gemini-3.7-flash-medium. Padrão: modelo padrão ativo'),
         system_prompt: z.string().optional().describe('Instrução de persona ou diretrizes de sistema para guiar o subagente'),
-        arquivos: z.array(z.string()).optional().describe('Lista de arquivos do projeto que o subagente deve carregar e analisar do disco (ex: ["app/Models/Fidelidade.php", "database/migrations/2026_create_fidelidade.php"])')
+        arquivos: z.array(z.string()).optional().describe(DESC_ARQUIVOS),
+        conteudos: z.array(z.object({
+          caminho: z.string().describe('Caminho/nome do arquivo'),
+          conteudo: z.string().describe('Conteúdo do arquivo')
+        })).optional().describe('RECOMENDADO para projetos remotos: o conteúdo dos arquivos locais já lido pela IA cliente. Funciona para qualquer projeto sem a VPS acessar seu disco. Ex: [{caminho:"revenda.php", conteudo:"<?php ..."}]'),
+        max_tokens: z.number().optional().describe('Limite de tokens de saída (padrão 16384, máx 65536)'),
+        temperature: z.number().optional().describe('Criatividade de 0 a 2 (padrão 0.7)')
       },
-      async ({ prompt, modelo, system_prompt, arquivos }, extra) => {
+      async ({ prompt, modelo, system_prompt, arquivos, conteudos, max_tokens, temperature }, extra) => {
         let progressHeartbeatTimer = null;
         try {
           const progressToken =
@@ -505,6 +653,9 @@ export function initMcp(app, gateway) {
             modelo,
             system_prompt,
             arquivos,
+            conteudos,
+            max_tokens,
+            temperature,
             userKey,
             progressCallback,
             abortSignal: extra?.signal
@@ -609,13 +760,16 @@ export function initMcp(app, gateway) {
     // -------------------------------------------------------------
     server.tool(
       'ler_codigo_arquivo',
-      'Lê o código-fonte de um arquivo do projeto no disco com numeração de linhas. Use para inspecionar classes, models, migrations ou controllers.',
+      'Lê o código-fonte de um arquivo do projeto no disco com numeração de linhas. Use para inspecionar classes, models, migrations ou controllers.' + DESC_TOOL_DISCO,
       {
         caminho: z.string().describe('Caminho relativo do arquivo no projeto (ex: "app/Models/Fidelidade.php", "admin/accounts.php", "database.sql")'),
         linha_inicio: z.number().optional().describe('Linha inicial (padrão: 1)'),
         linha_fim: z.number().optional().describe('Linha final (opcional, padrão: exibe até 500 linhas)')
       },
       async ({ caminho, linha_inicio, linha_fim }) => {
+        if (!localModeEnabled) {
+          return { isError: true, content: [{ type: 'text', text: DISK_OFF_MSG }] };
+        }
         try {
           const content = readCodeFile(caminho, linha_inicio, linha_fim);
           return {
@@ -635,13 +789,16 @@ export function initMcp(app, gateway) {
     // -------------------------------------------------------------
     server.tool(
       'listar_arquivos_projeto',
-      'Lista pastas e arquivos do projeto para descobrir onde estão localizados os módulos, migrations e classes.',
+      'Lista pastas e arquivos do projeto para descobrir onde estão localizados os módulos, migrations e classes.' + DESC_TOOL_DISCO,
       {
         pasta: z.string().optional().describe('Subpasta para listar (ex: "app/Models", "database", "admin"). Vazio lista a raiz.'),
         extensao: z.string().optional().describe('Filtrar por extensão (ex: ".php", ".js", ".sql")'),
         recursivo: z.boolean().optional().describe('Se deve listar recursivamente (padrão: true para subpastas, false para raiz)')
       },
       async ({ pasta, extensao, recursivo }) => {
+        if (!localModeEnabled) {
+          return { isError: true, content: [{ type: 'text', text: DISK_OFF_MSG }] };
+        }
         try {
           const files = listProjectFiles(pasta, extensao, recursivo);
           return {
@@ -664,13 +821,16 @@ export function initMcp(app, gateway) {
     // -------------------------------------------------------------
     server.tool(
       'buscar_no_codigo',
-      'Pesquisa termos, nomes de tabelas, classes ou métodos em todo o código-fonte do projeto.',
+      'Pesquisa termos, nomes de tabelas, classes ou métodos em todo o código-fonte do projeto.' + DESC_TOOL_DISCO,
       {
         termo: z.string().describe('Termo, tabela ou nome de classe a buscar (ex: "Fidelidade", "ordens_servico", "calculatePoints")'),
         pasta: z.string().optional().describe('Subpasta onde buscar (ex: "app", "admin"). Vazio busca no projeto todo.'),
         extensao: z.string().optional().describe('Extensão dos arquivos (padrão: ".php")')
       },
       async ({ termo, pasta, extensao }) => {
+        if (!localModeEnabled) {
+          return { isError: true, content: [{ type: 'text', text: DISK_OFF_MSG }] };
+        }
         try {
           const results = searchInCode(termo, pasta, extensao);
           return {
@@ -773,7 +933,17 @@ export function initMcp(app, gateway) {
     if (sessionId) {
       const session = activeSessions.get(sessionId);
       if (!session) {
-        return res.status(404).send('Session not found or expired');
+        // Sessão expirou (ex: o gateway reiniciou). Responde em JSON-RPC pedindo reconexão,
+        // em vez de um 404 seco que faz o cliente MCP travar/derrubar a conexão.
+        const bodyId = req.body?.id ?? null;
+        return res.status(404).json({
+          jsonrpc: '2.0',
+          id: bodyId,
+          error: {
+            code: -32001,
+            message: 'Sessão MCP expirada ou servidor reiniciado. Reconecte ao endpoint /mcp/sse para abrir uma nova sessão.'
+          }
+        });
       }
 
       try {
@@ -837,7 +1007,7 @@ export function initMcp(app, gateway) {
             tools: [
               {
                 name: 'executar_subagente',
-                description: 'Executa uma tarefa ou raciocínio complexo delegando para um subagente na API do Painel (aceita lista de arquivos do projeto para analisar)',
+                description: 'Delega uma tarefa/raciocínio a um subagente da API. Para analisar código envie o conteúdo via "conteudos" (lido localmente pela IA cliente — funciona em qualquer projeto); "arquivos" só lê o disco do servidor.',
                 inputSchema: {
                   type: 'object',
                   properties: {
@@ -847,8 +1017,22 @@ export function initMcp(app, gateway) {
                     arquivos: {
                       type: 'array',
                       items: { type: 'string' },
-                      description: 'Lista de arquivos do projeto para o subagente carregar do disco e entender (ex: ["app/Models/Fidelidade.php"])'
-                    }
+                      description: DESC_ARQUIVOS
+                    },
+                    conteudos: {
+                      type: 'array',
+                      items: {
+                        type: 'object',
+                        properties: {
+                          caminho: { type: 'string' },
+                          conteudo: { type: 'string' }
+                        },
+                        required: ['conteudo']
+                      },
+                      description: 'RECOMENDADO para projetos remotos: conteúdo dos arquivos locais já lido pela IA cliente. Funciona em qualquer projeto sem a VPS acessar o disco do cliente.'
+                    },
+                    max_tokens: { type: 'number', description: 'Limite de tokens de saída (padrão 16384, máx 65536)' },
+                    temperature: { type: 'number', description: 'Criatividade de 0 a 2 (padrão 0.7)' }
                   },
                   required: ['prompt']
                 }
@@ -865,7 +1049,7 @@ export function initMcp(app, gateway) {
               },
               {
                 name: 'ler_codigo_arquivo',
-                description: 'Lê o código-fonte de um arquivo do projeto no disco com numeração de linhas',
+                description: 'Lê o código-fonte de um arquivo do projeto no disco com numeração de linhas' + DESC_TOOL_DISCO,
                 inputSchema: {
                   type: 'object',
                   properties: {
@@ -878,7 +1062,7 @@ export function initMcp(app, gateway) {
               },
               {
                 name: 'listar_arquivos_projeto',
-                description: 'Lista arquivos e pastas do projeto para descobrir onde estão as classes e migrações',
+                description: 'Lista arquivos e pastas do projeto para descobrir onde estão as classes e migrações' + DESC_TOOL_DISCO,
                 inputSchema: {
                   type: 'object',
                   properties: {
@@ -890,7 +1074,7 @@ export function initMcp(app, gateway) {
               },
               {
                 name: 'buscar_no_codigo',
-                description: 'Busca textual rápida (grep) por termos, tabelas, métodos ou classes no projeto',
+                description: 'Busca textual rápida (grep) por termos, tabelas, métodos ou classes no projeto' + DESC_TOOL_DISCO,
                 inputSchema: {
                   type: 'object',
                   properties: {
@@ -949,6 +1133,12 @@ export function initMcp(app, gateway) {
       }
 
       if (toolName === 'ler_codigo_arquivo') {
+        if (!localModeEnabled) {
+          return res.status(200).json({
+            jsonrpc: '2.0', id: msgId,
+            result: { isError: true, content: [{ type: 'text', text: DISK_OFF_MSG }] }
+          });
+        }
         try {
           const content = readCodeFile(args.caminho, args.linha_inicio, args.linha_fim);
           return res.status(200).json({
@@ -971,6 +1161,12 @@ export function initMcp(app, gateway) {
       }
 
       if (toolName === 'listar_arquivos_projeto') {
+        if (!localModeEnabled) {
+          return res.status(200).json({
+            jsonrpc: '2.0', id: msgId,
+            result: { isError: true, content: [{ type: 'text', text: DISK_OFF_MSG }] }
+          });
+        }
         try {
           const files = listProjectFiles(args.pasta, args.extensao, args.recursivo);
           return res.status(200).json({
@@ -996,6 +1192,12 @@ export function initMcp(app, gateway) {
       }
 
       if (toolName === 'buscar_no_codigo') {
+        if (!localModeEnabled) {
+          return res.status(200).json({
+            jsonrpc: '2.0', id: msgId,
+            result: { isError: true, content: [{ type: 'text', text: DISK_OFF_MSG }] }
+          });
+        }
         try {
           const results = searchInCode(args.termo, args.pasta, args.extensao);
           return res.status(200).json({
@@ -1029,6 +1231,9 @@ export function initMcp(app, gateway) {
             modelo: args.modelo,
             system_prompt: args.system_prompt,
             arquivos: args.arquivos,
+            conteudos: args.conteudos,
+            max_tokens: args.max_tokens,
+            temperature: args.temperature,
             userKey
           });
 
@@ -1154,4 +1359,5 @@ export function initMcp(app, gateway) {
   });
 
   console.log(`🤖 MCP Server (SSE + OAuth Auto-Handshake) inicializado e disponível em /mcp`);
+  console.log(`📂 MCP Modo: ${localModeEnabled ? 'LOCAL — lendo disco em ' + projectRoot : 'REMOTO/VPS — clientes usam "conteudos" (ligue no SuperAdmin: toggle + caminho, ou MCP_LOCAL=true)'} [revalidado a cada 30s]`);
 }

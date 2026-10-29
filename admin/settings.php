@@ -22,6 +22,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
         setSetting('realtime_access', trim($_POST['realtime_access'] ?? 'all'));
         setSetting('theme_mode', trim($_POST['theme_mode'] ?? 'light'));
         setSetting('theme_color_scheme', trim($_POST['theme_color_scheme'] ?? 'purple_cyan'));
+        setSetting('mcp_local_mode', isset($_POST['mcp_local_mode']) ? '1' : '0');
+        setSetting('mcp_workspace_dir', trim($_POST['mcp_workspace_dir'] ?? ''));
 
         $msg = 'Configurações globais salvas com sucesso!';
     }
@@ -37,6 +39,8 @@ $whatsappUrl = getSetting('whatsapp_api_url', 'http://127.0.0.1:3000');
 $realtimeAccess = getSetting('realtime_access', 'all');
 $themeMode = getSetting('theme_mode', 'light');
 $themeScheme = getSetting('theme_color_scheme', 'purple_cyan');
+$mcpLocalMode = getSetting('mcp_local_mode', '0') === '1';
+$mcpWorkspaceDir = getSetting('mcp_workspace_dir', '');
 $availableThemes = getThemeThemes();
 
 require_once __DIR__ . '/includes/header.php';
@@ -180,6 +184,26 @@ require_once __DIR__ . '/includes/header.php';
                         <option value="admin" <?= ($realtimeAccess === 'admin') ? 'selected' : '' ?>>🔒 Exclusivo para Administrador (Oculto para Clientes)</option>
                     </select>
                 </div>
+            </div>
+        </div>
+
+        <!-- MCP: Modo Local (leitura de código do disco) -->
+        <div class="bg-gray-900/80 p-5 rounded-2xl border border-gray-800 space-y-4">
+            <h3 class="text-xs font-bold text-teal-400 uppercase tracking-wider flex items-center">
+                <i class="fa-solid fa-folder-tree mr-2"></i> 5. MCP — Leitura de Código Local (Subagente)
+            </h3>
+            <p class="text-[11px] text-gray-400">Quando ligado, as ferramentas do MCP (<code>ler_codigo_arquivo</code>, <code>buscar_no_codigo</code>, <code>arquivos</code>) leem o código direto do disco desta máquina. Deixe <b>desligado na VPS</b>: ali os clientes devem enviar o código pelo parâmetro <code>conteudos</code>. Por segurança, o modo local só ativa de fato se o caminho abaixo existir nesta máquina.</p>
+            <label class="flex items-center gap-3 p-3.5 rounded-xl border <?= $mcpLocalMode ? 'border-teal-400 bg-teal-500/10 ring-2 ring-teal-400/30' : 'border-gray-800 bg-gray-950' ?> cursor-pointer hover:border-gray-700 transition max-w-xl">
+                <input type="checkbox" name="mcp_local_mode" value="1" <?= $mcpLocalMode ? 'checked' : '' ?> class="accent-teal-400 w-4 h-4">
+                <div>
+                    <div class="font-bold text-white text-xs flex items-center gap-1.5"><i class="fa-solid fa-hard-drive text-teal-400"></i> Ativar leitura de disco (modo LOCAL)</div>
+                    <div class="text-[10px] text-gray-400">Use apenas no seu PC/localhost. Na VPS mantenha desligado.</div>
+                </div>
+            </label>
+            <div>
+                <label class="block font-semibold text-gray-300 text-xs mb-1">Caminho do Projeto a Ler</label>
+                <input type="text" name="mcp_workspace_dir" value="<?= htmlspecialchars($mcpWorkspaceDir) ?>" placeholder="Ex: C:\xampp\htdocs\meuprojeto" class="w-full p-2.5 rounded-xl bg-gray-950 border border-gray-800 text-white font-mono text-xs">
+                <span class="text-[10px] text-gray-500 mt-1 block">Pasta raiz que o subagente poderá ler. Vazio = raiz padrão do gateway. O MCP revalida esse caminho a cada 30s (não precisa reiniciar).</span>
             </div>
         </div>
 
