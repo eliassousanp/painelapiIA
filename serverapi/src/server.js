@@ -2470,34 +2470,39 @@ httpServer.listen(PORT, () => {
   console.log(`🤖 Claude Code MCP:   claude mcp add --transport sse painel-subagente http://localhost:${PORT}/mcp/sse --header "Authorization: Bearer SUA_API_KEY"`);
   console.log(`=============================================================\n`);
 
-  // Túnel HTTPS automático para clientes que exigem SSL (como Claude Desktop e Claude.ai)
+  // Túnel Cloudflare HTTPS automático (Zero-Config / Sem tela de IP / 100% Compatível com Claude Desktop)
   const shouldStartTunnel = process.env.MCP_HTTPS_TUNNEL !== 'false' && (process.platform === 'win32' || process.env.MCP_HTTPS_TUNNEL === 'true');
 
   if (shouldStartTunnel) {
     let tunnelProcess = null;
     function startHttpsTunnel() {
       try {
-        console.log(`🔄 Gerando link HTTPS público para o Claude Desktop... Aguarde...`);
+        console.log(`☁️  Iniciando Cloudflare Tunnel oficial para o Claude Desktop...`);
         const isWin = process.platform === 'win32';
         const cmd = isWin ? 'cmd.exe' : 'npx';
         const args = isWin 
-          ? ['/c', 'npx', '--yes', 'localtunnel', '--port', String(PORT)]
-          : ['--yes', 'localtunnel', '--port', String(PORT)];
+          ? ['/c', 'npx', '--yes', 'cloudflared', 'tunnel', '--url', `http://localhost:${PORT}`]
+          : ['--yes', 'cloudflared', 'tunnel', '--url', `http://localhost:${PORT}`];
 
         tunnelProcess = spawn(cmd, args, { stdio: ['ignore', 'pipe', 'pipe'] });
 
-        tunnelProcess.stdout.on('data', (data) => {
+        let urlFound = false;
+        const handleOutput = (data) => {
           const text = data.toString();
-          const match = text.match(/https:\/\/[a-z0-9-]+\.loca\.lt/i);
-          if (match) {
+          const match = text.match(/https:\/\/[a-z0-9-]+\.trycloudflare\.com/i);
+          if (match && !urlFound) {
+            urlFound = true;
             const httpsUrl = match[0];
-            console.log(`\n🔒 =============================================================`);
-            console.log(`🌐 TÚNEL HTTPS ATIVO PARA O CLAUDE DESKTOP:`);
+            console.log(`\n=============================================================`);
+            console.log(`☁️  CLOUDFLARE TUNNEL ATIVO (SEM TELA DE IP / SEM SENHA)`);
             console.log(`👉 Link oficial para colar no Claude Desktop:`);
             console.log(`   ${httpsUrl}/mcp/sse?apiKey=SUA_CHAVE_DO_PAINEL`);
-            console.log(`🔒 =============================================================\n`);
+            console.log(`=============================================================\n`);
           }
-        });
+        };
+
+        tunnelProcess.stdout.on('data', handleOutput);
+        tunnelProcess.stderr.on('data', handleOutput);
 
         tunnelProcess.on('exit', () => {
           if (!process.exitCode) {
@@ -2505,7 +2510,7 @@ httpServer.listen(PORT, () => {
           }
         });
       } catch (e) {
-        console.warn('[Tunnel Warning] Não foi possível iniciar túnel HTTPS automático:', e.message);
+        console.warn('[Cloudflare Tunnel Warning] Erro ao iniciar:', e.message);
       }
     }
 
