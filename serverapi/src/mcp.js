@@ -31,9 +31,9 @@ const defaultProjectRoot = process.env.WORKSPACE_DIR
 // -------------------------------------------------------------
 const ENV_LOCAL_FALLBACK = /^(1|true|local|yes|on)$/i.test(String(process.env.MCP_LOCAL || '').trim());
 
-// Estado de execução resolvido em runtime (atualizado a partir do SuperAdmin/env).
-let localModeEnabled = false;   // leitura de disco está realmente ativa nesta máquina?
-let projectRoot = defaultProjectRoot;   // raiz efetiva que as tools de disco enxergam
+// Estado de execução inicial: se MCP_LOCAL=true no .env e o caminho existir, já inicia ativo imediatamente!
+let localModeEnabled = Boolean(ENV_LOCAL_FALLBACK && fs.existsSync(defaultProjectRoot) && fs.statSync(defaultProjectRoot).isDirectory());
+let projectRoot = defaultProjectRoot;
 
 // Descrições neutras — sempre corretas independente do modo (a IA cliente decide sozinha).
 const DESC_ARQUIVOS = 'Caminhos para o subagente LER DO DISCO DO GATEWAY. Só funciona se o gateway estiver em modo LOCAL (ativado no painel SuperAdmin) e os arquivos existirem nessa máquina. Em gateway remoto/VPS NÃO use isto — envie o código pelo parâmetro "conteudos". Ex: ["revenda.php", "admin/accounts.php"]';
@@ -361,6 +361,9 @@ export function initMcp(app, gateway) {
    * Executa a chamada do subagente com suporte a streaming contínuo e múltiplos fallbacks
    */
   async function runSubagent({ prompt, modelo, system_prompt, arquivos, conteudos, max_tokens, temperature, userKey, progressCallback, abortSignal }) {
+    // Revalida o modo MCP (painel SuperAdmin / .env) na hora para garantir sincronia imediata
+    await refreshMcpMode().catch(() => {});
+
     let rawModel = modelo;
     if (!rawModel) {
       try {
@@ -767,6 +770,7 @@ export function initMcp(app, gateway) {
         linha_fim: z.number().optional().describe('Linha final (opcional, padrão: exibe até 500 linhas)')
       },
       async ({ caminho, linha_inicio, linha_fim }) => {
+        await refreshMcpMode().catch(() => {});
         if (!localModeEnabled) {
           return { isError: true, content: [{ type: 'text', text: DISK_OFF_MSG }] };
         }
@@ -796,6 +800,7 @@ export function initMcp(app, gateway) {
         recursivo: z.boolean().optional().describe('Se deve listar recursivamente (padrão: true para subpastas, false para raiz)')
       },
       async ({ pasta, extensao, recursivo }) => {
+        await refreshMcpMode().catch(() => {});
         if (!localModeEnabled) {
           return { isError: true, content: [{ type: 'text', text: DISK_OFF_MSG }] };
         }
@@ -828,6 +833,7 @@ export function initMcp(app, gateway) {
         extensao: z.string().optional().describe('Extensão dos arquivos (padrão: ".php")')
       },
       async ({ termo, pasta, extensao }) => {
+        await refreshMcpMode().catch(() => {});
         if (!localModeEnabled) {
           return { isError: true, content: [{ type: 'text', text: DISK_OFF_MSG }] };
         }
@@ -1095,6 +1101,7 @@ export function initMcp(app, gateway) {
 
     // 3. Tools Call
     if (method === 'tools/call') {
+      await refreshMcpMode().catch(() => {});
       let userKey;
       try {
         userKey = await extractAndAuth(req);
