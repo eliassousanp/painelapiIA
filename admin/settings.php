@@ -9,7 +9,9 @@ $msg = '';
 $error = '';
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
-    if ($_POST['action'] === 'update_settings') {
+    if (!validate_csrf()) {
+        $error = 'Sessão expirada ou token de segurança CSRF inválido. Recarregue a página.';
+    } elseif ($_POST['action'] === 'update_settings') {
         setSetting('pre_prompt', trim($_POST['pre_prompt'] ?? ''));
         setSetting('mistic_client_id', trim($_POST['mistic_client_id'] ?? ''));
         setSetting('mistic_client_secret', trim($_POST['mistic_client_secret'] ?? ''));
@@ -42,6 +44,7 @@ require_once __DIR__ . '/includes/header.php';
 
 <div class="glass-card p-6 sm:p-8 rounded-3xl border border-gray-800">
     <form method="POST" action="settings.php" class="space-y-6">
+        <?= csrf_field() ?>
         <input type="hidden" name="action" value="update_settings">
 
         <!-- Aparência & Temas Globais -->

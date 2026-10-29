@@ -191,6 +191,9 @@ $appName = getAppName();
             animation: pulse-subtle 2s infinite ease-in-out;
         }
     </style>
+    <link href="<?= getAppBaseUrl() ?>/assets/css/theme.css?v=<?= time() ?>" rel="stylesheet">
+    <script>window.BRLOVE_BASE_URL = '<?= getAppBaseUrl() ?>';</script>
+    <script src="<?= getAppBaseUrl() ?>/assets/js/theme.js"></script>
 </head>
 <body class="font-sans antialiased min-h-screen selection:bg-amber-500 selection:text-slate-950 flex flex-col">
 

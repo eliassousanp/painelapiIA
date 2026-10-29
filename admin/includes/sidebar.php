@@ -16,141 +16,145 @@ try {
     $accountsCount = 0;
 }
 ?>
-<!-- MENU LATERAL ESQUERDO (SIDEBAR VERTICAL) -->
-<aside id="sidebar" class="w-64 glass-sidebar fixed inset-y-0 left-0 z-50 flex flex-col justify-between transition-transform duration-300 transform lg:translate-x-0 -translate-x-full overflow-hidden">
-    <div class="space-y-4 p-4 sm:p-5 overflow-y-auto flex-1 custom-scrollbar">
+<!-- MENU LATERAL ESQUERDO (SIDEBAR VERTICAL MODERNA) -->
+<aside id="sidebar" class="w-64 glass-sidebar fixed inset-y-0 left-0 z-50 flex flex-col justify-between transition-transform duration-300 transform lg:translate-x-0 -translate-x-full overflow-hidden shadow-xl">
+    <div class="space-y-5 p-4 sm:p-5 overflow-y-auto flex-1 custom-scrollbar">
         
         <!-- Logo & Brand Header -->
-        <div class="flex items-center justify-between pb-3.5 border-b border-gray-800/80">
-            <a href="<?= getAppBaseUrl() ?>/index.php" class="flex items-center space-x-3">
-                <div class="w-10 h-10 rounded-2xl bg-gradient-to-tr from-purple-600 via-indigo-600 to-cyan-500 flex items-center justify-center font-extrabold text-xl text-white shadow-lg shadow-purple-500/30">
+        <div class="flex items-center justify-between pb-4 border-b" style="border-color: var(--border-color);">
+            <a href="<?= getAppBaseUrl() ?>/index.php" class="flex items-center space-x-3 group">
+                <div class="w-10 h-10 rounded-2xl flex items-center justify-center font-extrabold text-xl text-white shadow-lg transition-transform group-hover:scale-105" style="background: var(--brand-btn-gradient); box-shadow: 0 4px 14px var(--brand-glow);">
                     <i class="fa-solid fa-cloud-bolt"></i>
                 </div>
                 <div>
-                    <div class="text-base font-extrabold text-white tracking-tight leading-none">BRLove<span class="text-purple-400">API</span></div>
-                    <div class="text-[10px] text-gray-400 font-medium mt-1">Painel Administrativo</div>
+                    <div class="text-base font-extrabold tracking-tight leading-none" style="color: var(--text-heading);">
+                        BRLove<span style="color: var(--accent-primary);">API</span>
+                    </div>
+                    <div class="text-[10px] font-semibold tracking-wider uppercase mt-1" style="color: var(--text-muted);">Painel Admin</div>
                 </div>
             </a>
-            <button onclick="toggleSidebar()" class="lg:hidden text-gray-400 hover:text-white">
+            <button onclick="toggleSidebar()" class="lg:hidden p-1.5 rounded-lg hover:bg-black/5 dark:hover:bg-white/5 transition" style="color: var(--text-muted);">
                 <i class="fa-solid fa-xmark text-lg"></i>
             </button>
         </div>
 
         <!-- Navigation Links -->
-        <nav class="space-y-4 text-xs font-medium">
+        <nav class="space-y-4 text-xs font-semibold">
 
             <!-- Grupo 1: Visão Geral -->
             <div class="space-y-1">
-                <div class="px-3 text-[10px] font-bold text-gray-500 uppercase tracking-widest">Geral</div>
+                <div class="px-3 py-1 text-[10px] font-bold uppercase tracking-widest" style="color: var(--text-muted);">Visão Geral</div>
                 
-                <a href="dashboard.php" class="w-full flex items-center px-3.5 py-3 rounded-xl transition hover:bg-gray-800/50 <?= ($currentPage === 'dashboard.php' || $currentPage === 'index.php') ? 'sidebar-item-active' : 'text-gray-400 hover:text-white' ?>">
-                    <i class="fa-solid fa-chart-line w-5 text-purple-400 text-sm"></i>
+                <a href="dashboard.php" class="w-full flex items-center px-3.5 py-2.5 rounded-xl transition <?= ($currentPage === 'dashboard.php' || $currentPage === 'index.php') ? 'sidebar-item-active' : 'hover:bg-black/5 dark:hover:bg-white/5' ?>" style="<?= ($currentPage !== 'dashboard.php' && $currentPage !== 'index.php') ? 'color: var(--text-body);' : '' ?>">
+                    <i class="fa-solid fa-chart-line w-5 text-sm" style="color: var(--accent-primary);"></i>
                     <span>Dashboard</span>
                 </a>
             </div>
 
             <!-- Grupo 2: Engine de IA -->
             <div class="space-y-1">
-                <div class="px-3 text-[10px] font-bold text-gray-500 uppercase tracking-widest">Engine de IA</div>
+                <div class="px-3 py-1 text-[10px] font-bold uppercase tracking-widest" style="color: var(--text-muted);">Engine de IA</div>
                 
-                <a href="providers.php" class="w-full flex items-center px-3.5 py-3 rounded-xl transition hover:bg-gray-800/50 <?= ($currentPage === 'providers.php') ? 'sidebar-item-active' : 'text-gray-400 hover:text-white' ?>">
-                    <i class="fa-solid fa-network-wired w-5 text-cyan-400 text-sm"></i>
+                <a href="providers.php" class="w-full flex items-center px-3.5 py-2.5 rounded-xl transition <?= ($currentPage === 'providers.php') ? 'sidebar-item-active' : 'hover:bg-black/5 dark:hover:bg-white/5' ?>" style="<?= ($currentPage !== 'providers.php') ? 'color: var(--text-body);' : '' ?>">
+                    <i class="fa-solid fa-network-wired w-5 text-sm text-cyan-500"></i>
                     <span>Provedores & Keys</span>
-                    <span class="ml-auto px-2 py-0.5 rounded-full bg-cyan-500/20 text-cyan-300 text-[10px] font-mono"><?= $providersCount ?></span>
+                    <span class="ml-auto badge-brand text-[10px] font-mono"><?= $providersCount ?></span>
                 </a>
 
-                <a href="models.php" class="w-full flex items-center px-3.5 py-3 rounded-xl transition hover:bg-gray-800/50 <?= ($currentPage === 'models.php') ? 'sidebar-item-active' : 'text-gray-400 hover:text-white' ?>">
-                    <i class="fa-solid fa-microchip w-5 text-purple-400 text-sm"></i>
-                    <span>Modelos & Pré-Prompts</span>
-                    <span class="ml-auto px-2 py-0.5 rounded-full bg-purple-500/20 text-purple-300 text-[10px] font-mono"><?= $modelsCount ?></span>
+                <a href="models.php" class="w-full flex items-center px-3.5 py-2.5 rounded-xl transition <?= ($currentPage === 'models.php') ? 'sidebar-item-active' : 'hover:bg-black/5 dark:hover:bg-white/5' ?>" style="<?= ($currentPage !== 'models.php') ? 'color: var(--text-body);' : '' ?>">
+                    <i class="fa-solid fa-microchip w-5 text-sm" style="color: var(--accent-primary);"></i>
+                    <span>Modelos & Prompts</span>
+                    <span class="ml-auto badge-brand text-[10px] font-mono"><?= $modelsCount ?></span>
                 </a>
 
-                <a href="accounts.php" class="w-full flex items-center px-3.5 py-3 rounded-xl transition hover:bg-gray-800/50 <?= ($currentPage === 'accounts.php' || $currentPage === 'painel_accounts.php') ? 'sidebar-item-active' : 'text-gray-400 hover:text-white' ?>">
-                    <i class="fa-brands fa-google w-5 text-cyan-400 text-sm"></i>
+                <a href="accounts.php" class="w-full flex items-center px-3.5 py-2.5 rounded-xl transition <?= ($currentPage === 'accounts.php' || $currentPage === 'painel_accounts.php') ? 'sidebar-item-active' : 'hover:bg-black/5 dark:hover:bg-white/5' ?>" style="<?= ($currentPage !== 'accounts.php' && $currentPage !== 'painel_accounts.php') ? 'color: var(--text-body);' : '' ?>">
+                    <i class="fa-brands fa-google w-5 text-sm text-cyan-400"></i>
                     <span>Pool Antigravity</span>
-                    <span class="ml-auto px-2 py-0.5 rounded-full bg-cyan-500/20 text-cyan-300 text-[10px] font-mono"><?= $accountsCount ?></span>
+                    <span class="ml-auto badge-brand text-[10px] font-mono"><?= $accountsCount ?></span>
                 </a>
 
-                <a href="realtime.php" class="w-full flex items-center px-3.5 py-3 rounded-xl transition hover:opacity-90 <?= ($currentPage === 'realtime.php') ? 'sidebar-item-active' : 'dark:text-indigo-300 text-indigo-700 dark:bg-indigo-950/40 bg-indigo-50 dark:border-indigo-500/20 border-indigo-200 border' ?>">
-                    <i class="fa-solid fa-waveform-lines w-5 text-indigo-500 text-sm"></i>
-                    <span class="font-semibold text-xs">Console Realtime (Voz/Chat)</span>
-                    <span class="ml-auto px-2 py-0.5 rounded-full dark:bg-indigo-500/30 bg-indigo-200 dark:text-indigo-200 text-indigo-800 text-[10px] font-mono font-bold">LIVE</span>
+                <a href="realtime.php" class="w-full flex items-center px-3.5 py-2.5 rounded-xl transition <?= ($currentPage === 'realtime.php') ? 'sidebar-item-active' : 'hover:bg-black/5 dark:hover:bg-white/5' ?>" style="<?= ($currentPage !== 'realtime.php') ? 'color: var(--text-body);' : '' ?>">
+                    <i class="fa-solid fa-waveform-lines w-5 text-sm text-indigo-400"></i>
+                    <span>Console Realtime</span>
+                    <span class="ml-auto px-2 py-0.5 rounded-full text-[9px] font-mono font-extrabold flex items-center gap-1" style="background: rgba(99, 102, 241, 0.2); color: #818cf8; border: 1px solid rgba(99, 102, 241, 0.3);">
+                        <span class="pulse-indicator bg-indigo-500"></span> LIVE
+                    </span>
                 </a>
             </div>
 
             <!-- Grupo WhatsApp & Agente IA -->
             <div class="space-y-1">
-                <div class="px-3 text-[10px] font-bold text-emerald-500 uppercase tracking-widest flex items-center justify-between">
+                <div class="px-3 py-1 text-[10px] font-bold uppercase tracking-widest text-emerald-500 flex items-center justify-between">
                     <span>WhatsApp & IA</span>
-                    <span class="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse"></span>
+                    <span class="pulse-indicator bg-emerald-500"></span>
                 </div>
 
-                <a href="whatsapp.php" class="w-full flex items-center px-3.5 py-3 rounded-xl transition hover:opacity-90 <?= ($currentPage === 'whatsapp.php') ? 'sidebar-item-active' : 'dark:text-emerald-300 text-emerald-800 dark:bg-emerald-950/40 bg-emerald-50 dark:border-emerald-500/25 border-emerald-200 border' ?>">
-                    <i class="fa-brands fa-whatsapp w-5 text-emerald-500 text-base"></i>
-                    <span class="font-bold text-xs">WhatsApp & Agente IA</span>
-                    <span class="ml-auto px-2 py-0.5 rounded-full dark:bg-emerald-500/30 bg-emerald-200 dark:text-emerald-200 text-emerald-800 text-[10px] font-mono font-bold">QR + BOT</span>
+                <a href="whatsapp.php" class="w-full flex items-center px-3.5 py-2.5 rounded-xl transition <?= ($currentPage === 'whatsapp.php') ? 'sidebar-item-active' : 'hover:bg-black/5 dark:hover:bg-white/5' ?>" style="<?= ($currentPage !== 'whatsapp.php') ? 'color: var(--text-body);' : '' ?>">
+                    <i class="fa-brands fa-whatsapp w-5 text-sm text-emerald-500"></i>
+                    <span>WhatsApp & Bot</span>
+                    <span class="ml-auto px-2 py-0.5 rounded-full text-[9px] font-mono font-extrabold" style="background: rgba(16, 185, 129, 0.2); color: #10b981; border: 1px solid rgba(16, 185, 129, 0.3);">
+                        QR + BOT
+                    </span>
                 </a>
             </div>
 
             <!-- Grupo 3: Clientes & Financeiro -->
             <div class="space-y-1">
-                <div class="px-3 text-[10px] font-bold text-gray-500 uppercase tracking-widest">Clientes & Finanças</div>
+                <div class="px-3 py-1 text-[10px] font-bold uppercase tracking-widest" style="color: var(--text-muted);">Clientes & Vendas</div>
 
-                <a href="users.php" class="w-full flex items-center px-3.5 py-3 rounded-xl transition hover:bg-gray-800/50 <?= ($currentPage === 'users.php') ? 'sidebar-item-active' : 'text-gray-400 hover:text-white' ?>">
-                    <i class="fa-solid fa-users-gear w-5 text-indigo-400 text-sm"></i>
+                <a href="users.php" class="w-full flex items-center px-3.5 py-2.5 rounded-xl transition <?= ($currentPage === 'users.php') ? 'sidebar-item-active' : 'hover:bg-black/5 dark:hover:bg-white/5' ?>" style="<?= ($currentPage !== 'users.php') ? 'color: var(--text-body);' : '' ?>">
+                    <i class="fa-solid fa-users-gear w-5 text-sm" style="color: var(--accent-primary);"></i>
                     <span>Usuários & Revenda</span>
-                    <span class="ml-auto px-2 py-0.5 rounded-full bg-indigo-500/20 text-indigo-300 text-[10px] font-mono"><?= $usersCount ?></span>
+                    <span class="ml-auto badge-brand text-[10px] font-mono"><?= $usersCount ?></span>
                 </a>
 
-                <a href="plans.php" class="w-full flex items-center px-3.5 py-3 rounded-xl transition hover:bg-gray-800/50 <?= ($currentPage === 'plans.php') ? 'sidebar-item-active' : 'text-gray-400 hover:text-white' ?>">
-                    <i class="fa-solid fa-bolt w-5 text-amber-400 text-sm"></i>
+                <a href="plans.php" class="w-full flex items-center px-3.5 py-2.5 rounded-xl transition <?= ($currentPage === 'plans.php') ? 'sidebar-item-active' : 'hover:bg-black/5 dark:hover:bg-white/5' ?>" style="<?= ($currentPage !== 'plans.php') ? 'color: var(--text-body);' : '' ?>">
+                    <i class="fa-solid fa-bolt w-5 text-sm text-amber-500"></i>
                     <span>Planos & Recargas</span>
-                    <span class="ml-auto px-2 py-0.5 rounded-full bg-amber-500/20 text-amber-300 text-[10px] font-mono"><?= $plansCount ?></span>
+                    <span class="ml-auto badge-brand text-[10px] font-mono"><?= $plansCount ?></span>
                 </a>
 
-                <a href="payments.php" class="w-full flex items-center px-3.5 py-3 rounded-xl transition hover:bg-gray-800/50 <?= ($currentPage === 'payments.php') ? 'sidebar-item-active' : 'text-gray-400 hover:text-white' ?>">
-                    <i class="fa-solid fa-receipt w-5 text-emerald-400 text-sm"></i>
+                <a href="payments.php" class="w-full flex items-center px-3.5 py-2.5 rounded-xl transition <?= ($currentPage === 'payments.php') ? 'sidebar-item-active' : 'hover:bg-black/5 dark:hover:bg-white/5' ?>" style="<?= ($currentPage !== 'payments.php') ? 'color: var(--text-body);' : '' ?>">
+                    <i class="fa-solid fa-receipt w-5 text-sm text-emerald-500"></i>
                     <span>Vendas PIX</span>
                 </a>
-
-                
             </div>
 
             <!-- Grupo 4: Sistema & Auditoria -->
             <div class="space-y-1">
-                <div class="px-3 text-[10px] font-bold text-gray-500 uppercase tracking-widest">Auditoria & Sistema</div>
+                <div class="px-3 py-1 text-[10px] font-bold uppercase tracking-widest" style="color: var(--text-muted);">Auditoria & Sistema</div>
 
-                <a href="logs.php" class="w-full flex items-center px-3.5 py-3 rounded-xl transition hover:bg-gray-800/50 <?= ($currentPage === 'logs.php') ? 'sidebar-item-active' : 'text-gray-400 hover:text-white' ?>">
-                    <i class="fa-solid fa-list-check w-5 text-amber-400 text-sm"></i>
+                <a href="logs.php" class="w-full flex items-center px-3.5 py-2.5 rounded-xl transition <?= ($currentPage === 'logs.php') ? 'sidebar-item-active' : 'hover:bg-black/5 dark:hover:bg-white/5' ?>" style="<?= ($currentPage !== 'logs.php') ? 'color: var(--text-body);' : '' ?>">
+                    <i class="fa-solid fa-list-check w-5 text-sm text-amber-500"></i>
                     <span>Logs de Consumo</span>
                 </a>
 
-                <a href="settings.php" class="w-full flex items-center px-3.5 py-3 rounded-xl transition hover:bg-gray-800/50 <?= ($currentPage === 'settings.php') ? 'sidebar-item-active' : 'text-gray-400 hover:text-white' ?>">
-                    <i class="fa-solid fa-sliders w-5 text-gray-400 text-sm"></i>
-                    <span>Configurações Globais</span>
+                <a href="settings.php" class="w-full flex items-center px-3.5 py-2.5 rounded-xl transition <?= ($currentPage === 'settings.php') ? 'sidebar-item-active' : 'hover:bg-black/5 dark:hover:bg-white/5' ?>" style="<?= ($currentPage !== 'settings.php') ? 'color: var(--text-body);' : '' ?>">
+                    <i class="fa-solid fa-sliders w-5 text-sm" style="color: var(--text-muted);"></i>
+                    <span>Configurações</span>
                 </a>
             </div>
 
         </nav>
     </div>
 
-    <!-- Footer User Profile Sidebar -->
-    <div class="p-4 border-t dark:border-gray-800/80 border-slate-200 dark:bg-gray-900/40 bg-slate-50 space-y-3">
-        <a href="<?= getAppBaseUrl() ?>/client/index.php" class="w-full flex items-center justify-center space-x-2 py-2.5 rounded-xl dark:bg-gray-800/80 bg-white hover:bg-slate-100 dark:text-gray-300 text-slate-700 font-semibold text-xs border dark:border-transparent border-slate-200 shadow-sm transition">
-            <i class="fa-solid fa-user"></i>
-            <span>Ir para Área do Cliente</span>
+    <!-- Rodapé da Barra Lateral: Usuário & Acesso Cliente -->
+    <div class="p-4 border-t space-y-3" style="border-color: var(--border-color); background: var(--bg-surface-elevated);">
+        <a href="<?= getAppBaseUrl() ?>/client/index.php" class="w-full flex items-center justify-center space-x-2 py-2.5 rounded-xl glass-card font-bold text-xs shadow-sm transition hover:scale-[1.02]" style="color: var(--text-heading);">
+            <i class="fa-solid fa-arrow-up-right-from-square text-[11px]" style="color: var(--accent-primary);"></i>
+            <span>Área do Cliente</span>
         </a>
         <div class="flex items-center justify-between pt-1">
             <div class="flex items-center space-x-2.5">
-                <div class="w-8 h-8 rounded-xl bg-purple-600/30 text-purple-300 border border-purple-500/30 flex items-center justify-center font-bold text-xs">
+                <div class="w-8 h-8 rounded-xl flex items-center justify-center font-bold text-xs text-white shadow-sm" style="background: var(--brand-btn-gradient);">
                     <i class="fa-solid fa-user-shield"></i>
                 </div>
                 <div>
-                    <div class="text-xs font-bold dark:text-white text-slate-800 leading-tight">Admin</div>
-                    <div class="text-[10px] dark:text-gray-400 text-slate-500">Superusuário</div>
+                    <div class="text-xs font-bold leading-tight" style="color: var(--text-heading);">Administrador</div>
+                    <div class="text-[10px] font-medium" style="color: var(--text-muted);">Superusuário</div>
                 </div>
             </div>
-            <a href="<?= getAppBaseUrl() ?>/logout.php" title="Sair do Painel" class="text-gray-400 hover:text-red-400 text-sm p-1.5 transition">
+            <a href="<?= getAppBaseUrl() ?>/logout.php" title="Sair do Painel" class="text-gray-400 hover:text-red-500 text-sm p-1.5 transition">
                 <i class="fa-solid fa-right-from-bracket"></i>
             </a>
         </div>

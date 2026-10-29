@@ -9,9 +9,12 @@ $msg = '';
 $error = '';
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
-    $action = $_POST['action'];
+    if (!validate_csrf()) {
+        $error = 'Sessão expirada ou token de segurança CSRF inválido. Recarregue a página.';
+    } else {
+        $action = $_POST['action'];
 
-    if ($action === 'create_plan') {
+        if ($action === 'create_plan') {
         $name = trim($_POST['name'] ?? '');
         $price = (float)($_POST['price'] ?? 0);
         $resellerPrice = !empty($_POST['reseller_price']) ? (float)$_POST['reseller_price'] : null;
@@ -59,6 +62,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
         $stmt = $db->prepare("DELETE FROM plans WHERE id = ?");
         $stmt->execute([$planId]);
         $msg = 'Plano excluído com sucesso.';
+    }
     }
 }
 

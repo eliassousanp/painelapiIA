@@ -83,6 +83,51 @@ function requireReseller() {
 }
 
 /**
+ * Escapa strings com segurança para renderização HTML (Prevenção XSS)
+ */
+function e($value): string {
+    return htmlspecialchars((string)($value ?? ''), ENT_QUOTES, 'UTF-8');
+}
+
+/**
+ * Gera ou recupera o token CSRF da sessão atual
+ */
+function csrf_token(): string {
+    if (empty($_SESSION['csrf_token'])) {
+        $_SESSION['csrf_token'] = bin2hex(random_bytes(32));
+    }
+    return $_SESSION['csrf_token'];
+}
+
+/**
+ * Renderiza um campo input hidden com o token CSRF
+ */
+function csrf_field(): string {
+    return '<input type="hidden" name="csrf_token" value="' . e(csrf_token()) . '">';
+}
+
+/**
+ * Valida o token CSRF enviado via POST ou Header HTTP
+ */
+function validate_csrf(?string $token = null): bool {
+    $submitted = $token ?? ($_POST['csrf_token'] ?? ($_SERVER['HTTP_X_CSRF_TOKEN'] ?? ''));
+    if (empty($_SESSION['csrf_token']) || empty($submitted)) {
+        return false;
+    }
+    return hash_equals($_SESSION['csrf_token'], (string)$submitted);
+}
+
+/**
+ * Bloqueia a execução se a requisição POST não contiver token CSRF válido
+ */
+function require_csrf(): void {
+    if ($_SERVER['REQUEST_METHOD'] === 'POST' && !validate_csrf()) {
+        http_response_code(403);
+        die('Erro de segurança: Token CSRF inválido ou sessão expirada. Por favor, recarregue a página e tente novamente.');
+    }
+}
+
+/**
  * Gera uma API Key segura no formato oficial do Claude / Anthropic
  * Exemplo: sk-ant-api03-4f8a3c2e109d7b5f6a8e2c1d0b3a4f5e6d7c8b9a0f1e2d3c
  */
@@ -125,6 +170,61 @@ function getGatewayWsUrl() {
 function getGatewayInternalUrl() {
     $port = getSetting('gateway_port', '3000');
     return rtrim(getSetting('gateway_api_url', "http://127.0.0.1:{$port}"), '/');
+}
+
+/**
+ * Cliente HTTP unificado para comunicação segura entre PHP e o Gateway Node.js
+ * Substitui duplicações de código cURL cru em múltiplos pontos da aplicação.
+ */
+function gateway_request(string $endpoint, string $method = 'GET', $data = null, int $timeout = 30): array {
+    $base = getGatewayInternalUrl();
+    $url = $base . '/' . ltrim($endpoint, '/');
+
+    $ch = curl_init($url);
+    curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+    curl_setopt($ch, CURLOPT_CUSTOMREQUEST, strtoupper($method));
+    curl_setopt($ch, CURLOPT_TIMEOUT, $timeout);
+    curl_setopt($ch, CURLOPT_CONNECTTIMEOUT, 5);
+    curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, false);
+    curl_setopt($ch, CURLOPT_SSL_VERIFYHOST, false);
+
+    $headers = [];
+    if (!empty($data) || in_array(strtoupper($method), ['POST', 'PUT', 'PATCH'])) {
+        $headers[] = 'Content-Type: application/json';
+        $payload = is_string($data) ? $data : json_encode($data, JSON_UNESCAPED_UNICODE);
+        curl_setopt($ch, CURLOPT_POSTFIELDS, $payload);
+    }
+    if (!empty($headers)) {
+        curl_setopt($ch, CURLOPT_HTTPHEADER, $headers);
+    }
+
+    $response = curl_exec($ch);
+    $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+    $curlErr = curl_error($ch);
+    curl_close($ch);
+
+    if ($curlErr) {
+        return [
+            'success' => false,
+            'http_code' => $httpCode,
+            'error' => "Erro de conexão com o Gateway ({$endpoint}): {$curlErr}",
+            'data' => null,
+            'raw' => null
+        ];
+    }
+
+    $decoded = json_decode($response, true);
+    $isOk = ($httpCode >= 200 && $httpCode < 300);
+
+    return [
+        'success' => $isOk && (!is_array($decoded) || !isset($decoded['success']) || $decoded['success'] === true),
+        'http_code' => $httpCode,
+        'data' => $decoded,
+        'raw' => $response,
+        'error' => (!$isOk || (is_array($decoded) && isset($decoded['success']) && $decoded['success'] === false))
+            ? ($decoded['error']['message'] ?? ($decoded['error'] ?? ($decoded['message'] ?? "Código HTTP {$httpCode}")))
+            : null
+    ];
 }
 
 /**

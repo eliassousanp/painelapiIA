@@ -29,19 +29,11 @@ $activeAccounts = count(array_filter($accounts, fn($a) => $a['is_active'] == 1))
 $poolMetrics = null;
 $accountMetricsMap = [];
 try {
-    $gwUrl = getGatewayInternalUrl() . '/auth/antigravity/pool-metrics';
-    $chMetrics = curl_init($gwUrl);
-    curl_setopt($chMetrics, CURLOPT_RETURNTRANSFER, true);
-    curl_setopt($chMetrics, CURLOPT_TIMEOUT, 2);
-    $rawMetrics = curl_exec($chMetrics);
-    curl_close($chMetrics);
-    if ($rawMetrics) {
-        $jMetrics = json_decode($rawMetrics, true);
-        if (!empty($jMetrics['success'])) {
-            $poolMetrics = $jMetrics['metrics'];
-            foreach ($poolMetrics['accounts'] as $aM) {
-                $accountMetricsMap[$aM['id']] = $aM;
-            }
+    $resMetrics = gateway_request('auth/antigravity/pool-metrics', 'GET', null, 2);
+    if ($resMetrics['success'] && !empty($resMetrics['data']['metrics'])) {
+        $poolMetrics = $resMetrics['data']['metrics'];
+        foreach (($poolMetrics['accounts'] ?? []) as $aM) {
+            $accountMetricsMap[$aM['id']] = $aM;
         }
     }
 } catch (Exception $e) {}
@@ -58,57 +50,57 @@ $simultaneousChat = $activeAccounts * 16; // ex: 6 * 16 = 96 chats
 require_once __DIR__ . '/includes/header.php';
 ?>
 
-<!-- KPI Metrics Cards Grid -->
+<!-- KPI Metrics Cards Grid com Visual Moderno & Glow -->
 <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-5">
-    <div class="glass-card p-6 rounded-2xl border border-gray-800 flex flex-col justify-between">
-        <div class="flex items-center justify-between mb-3">
-            <span class="text-xs font-bold text-gray-400 uppercase tracking-wider">Total de Usuários</span>
-            <div class="w-9 h-9 rounded-xl bg-purple-500/20 text-purple-400 flex items-center justify-center">
+    <div class="glass-card p-6 rounded-3xl border flex flex-col justify-between group hover:scale-[1.01] transition-all">
+        <div class="flex items-center justify-between mb-4">
+            <span class="text-xs font-bold uppercase tracking-wider" style="color: var(--text-muted);">Total de Usuários</span>
+            <div class="w-10 h-10 rounded-2xl flex items-center justify-center text-sm shadow-sm" style="background: rgba(139, 92, 246, 0.15); color: #8b5cf6; border: 1px solid rgba(139, 92, 246, 0.25);">
                 <i class="fa-solid fa-users"></i>
             </div>
         </div>
-        <div class="text-3xl font-extrabold text-white font-mono"><?= number_format($totalUsers, 0, ',', '.') ?></div>
-        <p class="text-[11px] text-gray-400 mt-2 flex items-center">
-            <i class="fa-solid fa-user-check text-purple-400 mr-1.5"></i> Revendedores cadastrados
+        <div class="text-3xl font-extrabold font-mono" style="color: var(--text-heading);"><?= number_format($totalUsers, 0, ',', '.') ?></div>
+        <p class="text-[11px] mt-2.5 flex items-center font-medium" style="color: var(--text-muted);">
+            <i class="fa-solid fa-circle-check text-purple-400 mr-1.5"></i> Desenvolvedores e revendedores
         </p>
     </div>
 
-    <div class="glass-card p-6 rounded-2xl border border-gray-800 flex flex-col justify-between">
-        <div class="flex items-center justify-between mb-3">
-            <span class="text-xs font-bold text-gray-400 uppercase tracking-wider">API Keys Ativas</span>
-            <div class="w-9 h-9 rounded-xl bg-indigo-500/20 text-indigo-400 flex items-center justify-center">
+    <div class="glass-card p-6 rounded-3xl border flex flex-col justify-between group hover:scale-[1.01] transition-all">
+        <div class="flex items-center justify-between mb-4">
+            <span class="text-xs font-bold uppercase tracking-wider" style="color: var(--text-muted);">API Keys Ativas</span>
+            <div class="w-10 h-10 rounded-2xl flex items-center justify-center text-sm shadow-sm" style="background: rgba(99, 102, 241, 0.15); color: #6366f1; border: 1px solid rgba(99, 102, 241, 0.25);">
                 <i class="fa-solid fa-key"></i>
             </div>
         </div>
-        <div class="text-3xl font-extrabold text-indigo-400 font-mono"><?= number_format($activeKeys, 0, ',', '.') ?></div>
-        <p class="text-[11px] text-gray-400 mt-2 flex items-center">
-            <i class="fa-solid fa-shield-halved text-indigo-400 mr-1.5"></i> Chaves de clientes ativas
+        <div class="text-3xl font-extrabold font-mono" style="color: var(--accent-primary);"><?= number_format($activeKeys, 0, ',', '.') ?></div>
+        <p class="text-[11px] mt-2.5 flex items-center font-medium" style="color: var(--text-muted);">
+            <i class="fa-solid fa-shield-halved mr-1.5" style="color: var(--accent-primary);"></i> Chaves com acesso liberado
         </p>
     </div>
 
-    <div class="glass-card p-6 rounded-2xl border border-gray-800 flex flex-col justify-between">
-        <div class="flex items-center justify-between mb-3">
-            <span class="text-xs font-bold text-gray-400 uppercase tracking-wider">Tokens Processados</span>
-            <div class="w-9 h-9 rounded-xl bg-cyan-500/20 text-cyan-400 flex items-center justify-center">
+    <div class="glass-card p-6 rounded-3xl border flex flex-col justify-between group hover:scale-[1.01] transition-all">
+        <div class="flex items-center justify-between mb-4">
+            <span class="text-xs font-bold uppercase tracking-wider" style="color: var(--text-muted);">Tokens Consumidos</span>
+            <div class="w-10 h-10 rounded-2xl flex items-center justify-center text-sm shadow-sm" style="background: rgba(6, 182, 212, 0.15); color: #06b6d4; border: 1px solid rgba(6, 182, 212, 0.25);">
                 <i class="fa-solid fa-microchip"></i>
             </div>
         </div>
-        <div class="text-3xl font-extrabold text-cyan-400 font-mono"><?= number_format($totalTokensUsed, 0, ',', '.') ?></div>
-        <p class="text-[11px] text-gray-400 mt-2 flex items-center">
-            <i class="fa-solid fa-chart-pie text-cyan-400 mr-1.5"></i> Total consumido na API
+        <div class="text-3xl font-extrabold font-mono text-cyan-500"><?= number_format($totalTokensUsed, 0, ',', '.') ?></div>
+        <p class="text-[11px] mt-2.5 flex items-center font-medium" style="color: var(--text-muted);">
+            <i class="fa-solid fa-chart-pie text-cyan-400 mr-1.5"></i> Volume total de computação
         </p>
     </div>
 
-    <div class="glass-card p-6 rounded-2xl border border-gray-800 flex flex-col justify-between">
-        <div class="flex items-center justify-between mb-3">
-            <span class="text-xs font-bold text-gray-400 uppercase tracking-wider">Receita PIX Acumulada</span>
-            <div class="w-9 h-9 rounded-xl bg-emerald-500/20 text-emerald-400 flex items-center justify-center">
+    <div class="glass-card p-6 rounded-3xl border flex flex-col justify-between group hover:scale-[1.01] transition-all">
+        <div class="flex items-center justify-between mb-4">
+            <span class="text-xs font-bold uppercase tracking-wider" style="color: var(--text-muted);">Receita PIX</span>
+            <div class="w-10 h-10 rounded-2xl flex items-center justify-center text-sm shadow-sm" style="background: rgba(16, 185, 129, 0.15); color: #10b981; border: 1px solid rgba(16, 185, 129, 0.25);">
                 <i class="fa-solid fa-wallet"></i>
             </div>
         </div>
-        <div class="text-3xl font-extrabold text-emerald-400 font-mono">R$ <?= number_format($totalRevenue, 2, ',', '.') ?></div>
-        <p class="text-[11px] text-gray-400 mt-2 flex items-center">
-            <i class="fa-solid fa-circle-check text-emerald-400 mr-1.5"></i> Confirmados via Mistic Pay
+        <div class="text-3xl font-extrabold font-mono text-emerald-500">R$ <?= number_format($totalRevenue, 2, ',', '.') ?></div>
+        <p class="text-[11px] mt-2.5 flex items-center font-medium" style="color: var(--text-muted);">
+            <i class="fa-solid fa-bolt text-emerald-400 mr-1.5"></i> Vendas confirmadas no PIX
         </p>
     </div>
 </div>

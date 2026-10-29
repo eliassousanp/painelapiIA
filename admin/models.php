@@ -9,7 +9,9 @@ $msg = '';
 $error = '';
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
-    if ($_POST['action'] === 'save_model') {
+    if (!validate_csrf()) {
+        $error = 'Sessão expirada ou token de segurança CSRF inválido. Recarregue a página.';
+    } elseif ($_POST['action'] === 'save_model') {
         $modelId = (int)($_POST['model_id'] ?? 0);
         $modelKey = trim($_POST['model_key'] ?? '');
         $name = trim($_POST['name'] ?? '');
@@ -57,6 +59,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
         } elseif ($_POST['action'] === 'sync_provider_models') {
         $providerId = (int)($_POST['provider_id'] ?? 0);
         $customApiKey = trim($_POST['api_key'] ?? '');
+        $manualModels = trim($_POST['manual_models'] ?? '');
 
         if ($providerId > 0) {
             $stmtProv = $db->prepare("SELECT * FROM providers WHERE id = ?");
@@ -64,6 +67,33 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
             $provider = $stmtProv->fetch();
 
             if ($provider) {
+                // Se o usuário digitou uma API Key no modal, salva/ativa ela no provedor automaticamente
+                if (!empty($customApiKey)) {
+                    $cleanApiKey = preg_replace('/^Bearer\s+/i', '', $customApiKey);
+                    $stmtCheckKey = $db->prepare("SELECT id FROM provider_keys WHERE provider_id = ? AND api_key = ? LIMIT 1");
+                    $stmtCheckKey->execute([$providerId, $cleanApiKey]);
+                    if (!$stmtCheckKey->fetch()) {
+                        $stmtSaveKey = $db->prepare("INSERT INTO provider_keys (provider_id, api_key, key_label, status) VALUES (?, ?, 'Chave Importada', 'active')");
+                        $stmtSaveKey->execute([$providerId, $cleanApiKey]);
+                    }
+                }
+
+                $importedModels = [];
+
+                // 1. Processa modelos inseridos manualmente pelo usuário (se houver)
+                if (!empty($manualModels)) {
+                    $lines = preg_split('/[\r\n,]+/', $manualModels);
+                    foreach ($lines as $line) {
+                        $mRaw = trim($line);
+                        if (!empty($mRaw)) {
+                            $importedModels[] = [
+                                'upstream' => $mRaw,
+                                'name' => $mRaw
+                            ];
+                        }
+                    }
+                }
+
                 $isAntigravity = (
                     $providerId == 2 ||
                     stripos($provider['name'], 'antigravity') !== false ||
@@ -87,74 +117,97 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
                         $savedCount++;
                     }
                     $msg = "⚡ Sucesso! Foram sincronizados $savedCount modelos do Google Antigravity para você cadastrar/mascarar no painel!";
-                    $gwSyncUrl = getGatewayInternalUrl() . '/auth/antigravity/sync';
-                    $syncCtx = stream_context_create(['http' => ['timeout' => 5]]);
-                    @file_get_contents($gwSyncUrl, false, $syncCtx);
+                    gateway_request('auth/antigravity/sync', 'GET', null, 5);
                 } else {
-                    $apiKey = $customApiKey;
+                    $apiKey = !empty($customApiKey) ? preg_replace('/^Bearer\s+/i', '', $customApiKey) : '';
                     if (empty($apiKey)) {
                         $stmtKey = $db->prepare("SELECT api_key FROM provider_keys WHERE provider_id = ? AND status = 'active' ORDER BY id ASC LIMIT 1");
                         $stmtKey->execute([$providerId]);
                         $keyRow = $stmtKey->fetch();
                         if ($keyRow) {
-                            $apiKey = $keyRow['api_key'];
+                            $apiKey = preg_replace('/^Bearer\s+/i', '', $keyRow['api_key']);
                         }
                     }
 
-                    $importedModels = [];
                     $baseUrl = rtrim($provider['base_url'], '/');
+                    $isNvidia = (stripos($provider['name'], 'nvidia') !== false || stripos($baseUrl, 'nvidia.com') !== false);
 
-                    $endpointsToTry = [
-                        $baseUrl . '/v1/models',
-                        $baseUrl . '/models'
-                    ];
+                    // Se não tiver modelos manuais, tenta consultar a API do provedor via cURL
+                    if (empty($importedModels)) {
+                        $endpointsToTry = [
+                            $baseUrl . '/models',
+                            $baseUrl . '/v1/models'
+                        ];
 
-                    if (substr($baseUrl, -3) === '/v1') {
-                        $baseWithoutV1 = substr($baseUrl, 0, -3);
-                        array_unshift($endpointsToTry, $baseWithoutV1 . '/v1/models');
-                        array_unshift($endpointsToTry, $baseWithoutV1 . '/models');
-                    }
+                        if (substr($baseUrl, -3) === '/v1') {
+                            $baseWithoutV1 = substr($baseUrl, 0, -3);
+                            array_unshift($endpointsToTry, $baseUrl . '/models');
+                            array_unshift($endpointsToTry, $baseWithoutV1 . '/v1/models');
+                        }
 
-                    $endpointsToTry = array_unique($endpointsToTry);
-                    $fetchedData = null;
+                        $endpointsToTry = array_unique($endpointsToTry);
+                        $fetchedData = null;
+                        $lastHttpCode = 0;
+                        $curlErr = '';
 
-                    foreach ($endpointsToTry as $epUrl) {
-                        $ch = curl_init($epUrl);
-                        curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
-                        curl_setopt($ch, CURLOPT_TIMEOUT, 25);
-                        curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, false);
-                        curl_setopt($ch, CURLOPT_SSL_VERIFYHOST, false);
-                        curl_setopt($ch, CURLOPT_HTTPHEADER, [
-                            'Authorization: Bearer ' . $apiKey,
-                            'Accept: application/json',
-                            'User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64)'
-                        ]);
-                        $response = curl_exec($ch);
-                        $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
-                        curl_close($ch);
+                        foreach ($endpointsToTry as $epUrl) {
+                            $ch = curl_init($epUrl);
+                            curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+                            curl_setopt($ch, CURLOPT_TIMEOUT, 20);
+                            curl_setopt($ch, CURLOPT_FOLLOWLOCATION, true);
+                            curl_setopt($ch, CURLOPT_MAXREDIRS, 3);
+                            curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, false);
+                            curl_setopt($ch, CURLOPT_SSL_VERIFYHOST, false);
+                            curl_setopt($ch, CURLOPT_HTTPHEADER, [
+                                'Authorization: Bearer ' . $apiKey,
+                                'api-key: ' . $apiKey,
+                                'Accept: application/json',
+                                'User-Agent: BRLoveAPI-Client/5.0'
+                            ]);
+                            $response = curl_exec($ch);
+                            $lastHttpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+                            $curlErr = curl_error($ch);
+                            curl_close($ch);
 
-                        if ($httpCode === 200 && !empty($response)) {
-                            $json = json_decode($response, true);
-                            if (isset($json['data']) && is_array($json['data'])) {
-                                $fetchedData = $json['data'];
-                                break;
-                            } elseif (isset($json['models']) && is_array($json['models'])) {
-                                $fetchedData = $json['models'];
-                                break;
+                            if ($lastHttpCode === 200 && !empty($response)) {
+                                $json = json_decode($response, true);
+                                if (isset($json['data']) && is_array($json['data'])) {
+                                    $fetchedData = $json['data'];
+                                    break;
+                                } elseif (isset($json['models']) && is_array($json['models'])) {
+                                    $fetchedData = $json['models'];
+                                    break;
+                                } elseif (is_array($json) && !empty($json) && isset($json[0]['id'])) {
+                                    $fetchedData = $json;
+                                    break;
+                                }
                             }
                         }
-                    }
 
-                    if (is_array($fetchedData)) {
-                        foreach ($fetchedData as $mItem) {
-                            $mKey = is_array($mItem) ? ($mItem['id'] ?? $mItem['model'] ?? '') : (string)$mItem;
-                            $mName = is_array($mItem) ? ($mItem['display_name'] ?? $mItem['name'] ?? $mKey) : $mKey;
-                            if (!empty($mKey)) {
-                                $importedModels[] = [
-                                    'upstream' => $mKey,
-                                    'name' => $mName
-                                ];
+                        if (is_array($fetchedData)) {
+                            foreach ($fetchedData as $mItem) {
+                                $mKey = is_array($mItem) ? ($mItem['id'] ?? $mItem['model'] ?? '') : (string)$mItem;
+                                $mName = is_array($mItem) ? ($mItem['display_name'] ?? $mItem['name'] ?? $mKey) : $mKey;
+                                if (!empty($mKey)) {
+                                    $importedModels[] = [
+                                        'upstream' => $mKey,
+                                        'name' => $mName
+                                    ];
+                                }
                             }
+                        }
+
+                        // Presets automáticos da NVIDIA NIM caso a rota /models da NVIDIA exija parâmetros adicionais ou falhe
+                        if (empty($importedModels) && $isNvidia) {
+                            $importedModels = [
+                                ['upstream' => 'meta/llama-3.3-70b-instruct', 'name' => 'Meta Llama 3.3 70B Instruct'],
+                                ['upstream' => 'nvidia/llama-3.1-nemotron-70b-instruct', 'name' => 'NVIDIA Llama 3.1 Nemotron 70B'],
+                                ['upstream' => 'deepseek-ai/deepseek-r1', 'name' => 'DeepSeek R1 (Reasoning)'],
+                                ['upstream' => 'meta/llama-3.1-405b-instruct', 'name' => 'Meta Llama 3.1 405B Instruct'],
+                                ['upstream' => 'mistralai/mixtral-8x22b-instruct-v0.1', 'name' => 'Mixtral 8x22B Instruct'],
+                                ['upstream' => 'nvidia/nemotron-4-340b-instruct', 'name' => 'NVIDIA Nemotron 4 340B Instruct'],
+                                ['upstream' => 'qwen/qwen2.5-72b-instruct', 'name' => 'Qwen 2.5 72B Instruct']
+                            ];
                         }
                     }
 
@@ -165,9 +218,19 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
                             $stmtIns->execute([$providerId, $imp['upstream'], $imp['name']]);
                             $savedCount++;
                         }
-                        $msg = "⚡ Sucesso! Foram sincronizados $savedCount modelos do provedor '{$provider['name']}'! Eles já estão disponíveis no campo 'Modelo do Provedor' para você cadastrar e mascarar.";
+                        $msg = "⚡ Sucesso! Foram cadastrados $savedCount modelos para o provedor '{$provider['name']}'! Eles já estão disponíveis para você selecionar ou digitar no campo 'Modelo do Provedor'.";
                     } else {
-                        $error = 'Não foi possível buscar automaticamente os modelos. Verifique se a Base URL e a API Key do Provedor estão cadastradas corretamente.';
+                        $detailMsg = '';
+                        if ($lastHttpCode === 401) {
+                            $detailMsg = ' (HTTP 401: Chave de API inválida ou sem permissão na API externa)';
+                        } elseif ($lastHttpCode === 403) {
+                            $detailMsg = ' (HTTP 403: Acesso bloqueado pelo provedor)';
+                        } elseif ($lastHttpCode === 404) {
+                            $detailMsg = ' (HTTP 404: Endpoint /models não encontrado na Base URL informada)';
+                        } elseif (!empty($curlErr)) {
+                            $detailMsg = " (Erro de conexão: $curlErr)";
+                        }
+                        $error = 'Não foi possível listar os modelos automaticamente' . $detailMsg . '. Você pode colar os nomes dos modelos manualmente no campo abaixo ou digitar diretamente ao criar o modelo.';
                     }
                 }
             }
@@ -387,11 +450,16 @@ require_once __DIR__ . '/includes/header.php';
                         </select>
                     </div>
                     <div>
-                        <label class="block font-semibold text-gray-300 mb-1">Modelo Real no Upstream</label>
-                        <select id="model_upstream_select" onchange="onUpstreamSelectChange()" class="w-full p-2.5 rounded-xl bg-gray-950 border border-gray-800 text-cyan-300 font-mono text-xs focus:outline-none focus:border-cyan-500">
-                            <option value="">-- Selecione o modelo --</option>
-                        </select>
-                        <input type="hidden" name="upstream_model" id="model_upstream_model" value="">
+                        <div class="flex items-center justify-between mb-1">
+                            <label class="block font-semibold text-gray-300">Modelo Real no Upstream</label>
+                            <span class="text-[10px] text-cyan-400">Escolha ou digite</span>
+                        </div>
+                        <div class="space-y-1.5">
+                            <select id="model_upstream_select" onchange="onUpstreamSelectChange()" class="w-full p-2 rounded-xl bg-gray-950 border border-gray-800 text-cyan-300 font-mono text-xs focus:outline-none focus:border-cyan-500">
+                                <option value="">-- Selecionar da lista de modelos --</option>
+                            </select>
+                            <input type="text" name="upstream_model" id="model_upstream_model" required placeholder="ex: meta/llama-3.3-70b-instruct ou claude-sonnet-4-6" class="w-full p-2.5 rounded-xl bg-gray-950 border border-gray-800 text-cyan-300 font-mono text-xs focus:outline-none focus:border-cyan-500" title="Você pode escolher da lista acima ou digitar livremente o nome exato do modelo do provedor">
+                        </div>
                     </div>
                 </div>
 
@@ -512,37 +580,51 @@ require_once __DIR__ . '/includes/header.php';
     </div>
 </div>
 
-<!-- Modal de Sincronização Automática de Modelos -->
+<!-- Modal de Sincronização Automática ou Manual de Modelos -->
 <div id="syncModal" class="fixed inset-0 bg-black/80 backdrop-blur-md flex items-center justify-center p-4 z-50 hidden">
-    <div class="glass-card max-w-md w-full max-h-[90vh] overflow-y-auto custom-scrollbar p-6 rounded-2xl border border-gray-800 space-y-5 relative bg-gray-950">
+    <div class="glass-card max-w-lg w-full max-h-[90vh] overflow-y-auto custom-scrollbar p-6 rounded-2xl border border-gray-800 space-y-5 relative bg-gray-950">
         <button onclick="closeSyncModal()" class="absolute top-4 right-4 text-gray-400 hover:text-white"><i class="fa-solid fa-xmark text-lg"></i></button>
 
         <div>
             <h3 class="text-base font-bold text-white flex items-center">
                 <i class="fa-solid fa-cloud-arrow-down text-purple-400 mr-2"></i> Importar Modelos do Provedor
             </h3>
-            <p class="text-xs text-gray-400 mt-1">Selecione qualquer provedor cadastrado para consultar a API e importar os modelos automaticamente.</p>
+            <p class="text-xs text-gray-400 mt-1">Busque direto na API externa ou cole a lista de modelos manualmente caso o endpoint esteja bloqueado.</p>
         </div>
 
-        <form method="POST" action="models.php" class="space-y-4 text-xs" onsubmit="this.querySelector('button[type=submit]').innerHTML='<i class=\'fa-solid fa-spinner fa-spin mr-1\'></i> Consultando API...';">
+        <form method="POST" action="models.php" class="space-y-4 text-xs" onsubmit="this.querySelector('button[type=submit]').innerHTML='<i class=\'fa-solid fa-spinner fa-spin mr-1\'></i> Processando...';">
             <input type="hidden" name="action" value="sync_provider_models">
 
             <div>
                 <label class="block font-semibold text-gray-300 mb-1">Selecione o Provedor</label>
-                <select name="provider_id" required class="w-full p-2.5 rounded-xl bg-gray-950 border border-gray-800 text-white">
+                <select name="provider_id" id="sync_provider_id" required class="w-full p-2.5 rounded-xl bg-gray-950 border border-gray-800 text-white">
                     <?php foreach ($providers as $p): ?>
-                        <option value="<?= $p['id'] ?>"><?= htmlspecialchars($p['name']) ?> (<?= htmlspecialchars($p['base_url']) ?>)</option>
+                        <option value="<?= $p['id'] ?>" data-name="<?= htmlspecialchars($p['name']) ?>"><?= htmlspecialchars($p['name']) ?> (<?= htmlspecialchars($p['base_url']) ?>)</option>
                     <?php endforeach; ?>
                 </select>
             </div>
 
             <div>
-                <label class="block font-semibold text-gray-300 mb-1">API Key Opcional (Caso não haja chave ativa salva)</label>
-                <input type="password" name="api_key" placeholder="sk-..." class="w-full p-2.5 rounded-xl bg-gray-950 border border-gray-800 text-white font-mono">
+                <div class="flex items-center justify-between mb-1">
+                    <label class="block font-semibold text-gray-300">API Key do Provedor</label>
+                    <span class="text-[10px] text-amber-400">Salva e ativa automaticamente</span>
+                </div>
+                <input type="password" name="api_key" placeholder="nvapi-... ou sk-..." class="w-full p-2.5 rounded-xl bg-gray-950 border border-gray-800 text-white font-mono">
+            </div>
+
+            <div class="space-y-1.5 pt-1 border-t border-gray-800">
+                <div class="flex items-center justify-between">
+                    <label class="block font-semibold text-gray-300">Ou Cole Modelos Manualmente (um por linha):</label>
+                    <button type="button" onclick="loadNvidiaPresets()" class="text-[10px] text-cyan-400 hover:text-cyan-300 font-semibold flex items-center gap-1 cursor-pointer">
+                        <i class="fa-solid fa-bolt"></i> Preencher NVIDIA NIM
+                    </button>
+                </div>
+                <textarea name="manual_models" id="sync_manual_models" rows="4" placeholder="meta/llama-3.3-70b-instruct&#10;nvidia/llama-3.1-nemotron-70b-instruct&#10;deepseek-ai/deepseek-r1" class="w-full p-2.5 rounded-xl bg-gray-950 border border-gray-800 text-cyan-300 font-mono text-xs focus:outline-none focus:border-cyan-500"></textarea>
+                <span class="text-[10px] text-gray-500 block">Dica: Se a API da NVIDIA ou outra API não permitir listar via GET, cole os modelos aqui e eles serão salvos na hora!</span>
             </div>
 
             <button type="submit" class="w-full py-3.5 rounded-xl bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-500 hover:to-indigo-500 text-white font-bold text-sm shadow-xl shadow-purple-600/30 transition">
-                ⚡ Buscar & Cadastrar Modelos
+                ⚡ Sincronizar & Salvar Modelos
             </button>
         </form>
     </div>
@@ -738,6 +820,27 @@ require_once __DIR__ . '/includes/header.php';
         if (document.getElementById("select_routing_medium")) document.getElementById("select_routing_medium").value = medVal;
         if (document.getElementById("select_routing_heavy")) document.getElementById("select_routing_heavy").value = heavyVal;
         document.getElementById("modelModal").classList.remove("hidden");
+    }
+
+    function loadNvidiaPresets() {
+        const textarea = document.getElementById("sync_manual_models");
+        if (!textarea) return;
+        const presets = [
+            "deepseek-ai/deepseek-r1",
+            "deepseek-ai/deepseek-r1-distill-llama-70b",
+            "meta/llama-3.3-70b-instruct",
+            "nvidia/llama-3.1-nemotron-70b-instruct",
+            "meta/llama-3.1-405b-instruct",
+            "meta/llama-3.1-8b-instruct",
+            "mistralai/mixtral-8x22b-instruct-v0.1",
+            "mistralai/mistral-large-2-instruct",
+            "nvidia/nemotron-4-340b-instruct",
+            "qwen/qwen2.5-72b-instruct",
+            "qwen/qwen2.5-coder-32b-instruct",
+            "microsoft/phi-3.5-mini-instruct",
+            "google/gemma-2-27b-it"
+        ];
+        textarea.value = presets.join("\n");
     }
 
     function closeModelModal() {

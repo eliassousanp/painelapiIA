@@ -9,7 +9,9 @@ $msg = '';
 $error = '';
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
-    if ($_POST['action'] === 'save_provider') {
+    if (!validate_csrf()) {
+        $error = 'Sessão expirada ou token de segurança CSRF inválido. Recarregue a página.';
+    } elseif ($_POST['action'] === 'save_provider') {
         $providerId = (int)($_POST['provider_id'] ?? 0);
         $name = trim($_POST['name'] ?? '');
         $baseUrl = trim($_POST['base_url'] ?? '');
@@ -63,6 +65,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
     } elseif ($_POST['action'] === 'sync_provider_models') {
         $providerId = (int)($_POST['provider_id'] ?? 0);
         $customApiKey = trim($_POST['api_key'] ?? '');
+        $manualModels = trim($_POST['manual_models'] ?? '');
 
         if ($providerId > 0) {
             $stmtProv = $db->prepare("SELECT * FROM providers WHERE id = ?");
@@ -70,89 +73,123 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
             $provider = $stmtProv->fetch();
 
             if ($provider) {
-                $apiKey = $customApiKey;
-                if (empty($apiKey)) {
-                    $stmtKey = $db->prepare("SELECT api_key FROM provider_keys WHERE provider_id = ? AND status = 'active' ORDER BY id ASC LIMIT 1");
-                    $stmtKey->execute([$providerId]);
-                    $keyRow = $stmtKey->fetch();
-                    if ($keyRow) {
-                        $apiKey = $keyRow['api_key'];
+                // Se informou API Key, salva no banco automaticamente se não existir
+                if (!empty($customApiKey)) {
+                    $cleanApiKey = preg_replace('/^Bearer\s+/i', '', $customApiKey);
+                    $stmtCheckKey = $db->prepare("SELECT id FROM provider_keys WHERE provider_id = ? AND api_key = ? LIMIT 1");
+                    $stmtCheckKey->execute([$providerId, $cleanApiKey]);
+                    if (!$stmtCheckKey->fetch()) {
+                        $stmtSaveKey = $db->prepare("INSERT INTO provider_keys (provider_id, api_key, key_label, status) VALUES (?, ?, 'Chave Importada', 'active')");
+                        $stmtSaveKey->execute([$providerId, $cleanApiKey]);
                     }
                 }
 
                 $importedModels = [];
-                $baseUrl = rtrim($provider['base_url'], '/');
 
-                // Tentar consultar o endpoint de modelos do Provedor (/models ou /v1/models)
-                $endpointsToTry = [
-                    $baseUrl . '/models',
-                    $baseUrl . '/v1/models'
-                ];
-
-                if (substr($baseUrl, -3) === '/v1') {
-                    $baseWithoutV1 = substr($baseUrl, 0, -3);
-                    array_unshift($endpointsToTry, $baseWithoutV1 . '/v1/models');
-                    array_unshift($endpointsToTry, $baseWithoutV1 . '/models');
-                }
-
-                $endpointsToTry = array_unique($endpointsToTry);
-                $fetchedData = null;
-
-                foreach ($endpointsToTry as $epUrl) {
-                    $ch = curl_init($epUrl);
-                    curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
-                    curl_setopt($ch, CURLOPT_TIMEOUT, 25);
-                    curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, false);
-                    curl_setopt($ch, CURLOPT_SSL_VERIFYHOST, false);
-                    curl_setopt($ch, CURLOPT_HTTPHEADER, [
-                        'Authorization: Bearer ' . $apiKey,
-                        'Accept: application/json',
-                        'User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64)'
-                    ]);
-                    $response = curl_exec($ch);
-                    $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
-                    curl_close($ch);
-
-                    if ($httpCode === 200 && !empty($response)) {
-                        $json = json_decode($response, true);
-                        if (isset($json['data']) && is_array($json['data'])) {
-                            $fetchedData = $json['data'];
-                            break;
-                        } elseif (isset($json['models']) && is_array($json['models'])) {
-                            $fetchedData = $json['models'];
-                            break;
-                        }
-                    }
-                }
-
-                if (is_array($fetchedData)) {
-                    foreach ($fetchedData as $mItem) {
-                        $mKey = is_array($mItem) ? ($mItem['id'] ?? $mItem['model'] ?? '') : (string)$mItem;
-                        $mName = is_array($mItem) ? ($mItem['display_name'] ?? $mItem['name'] ?? $mKey) : $mKey;
-                        if (!empty($mKey)) {
+                // 1. Processa modelos inseridos manualmente
+                if (!empty($manualModels)) {
+                    $lines = preg_split('/[\r\n,]+/', $manualModels);
+                    foreach ($lines as $line) {
+                        $mRaw = trim($line);
+                        if (!empty($mRaw)) {
                             $importedModels[] = [
-                                'key' => $mKey,
-                                'name' => $mName,
-                                'upstream' => $mKey
+                                'upstream' => $mRaw,
+                                'name' => $mRaw
                             ];
                         }
                     }
                 }
 
-                // Se o provedor for Nanobridge e a API não listou dinamicamente, usar os modelos oficiais da documentação Nanobridge
-                if (empty($importedModels) && (strpos(strtolower($baseUrl), 'nanobridge') !== false || strpos(strtolower($provider['name']), 'nanobridge') !== false)) {
-                    $importedModels = [
-                        ['key' => 'deepseek-v4-flash', 'name' => 'DeepSeek V4 Flash', 'upstream' => 'deepseek-v4-flash'],
-                        ['key' => 'deepseek-v3.2', 'name' => 'DeepSeek V3.2', 'upstream' => 'deepseek-v3.2'],
-                        ['key' => 'deepseek-v4-pro', 'name' => 'DeepSeek V4 Pro', 'upstream' => 'deepseek-v4-pro-202606'],
-                        ['key' => 'glm-5.1', 'name' => 'GLM 5.1', 'upstream' => 'glm-5.1'],
-                        ['key' => 'glm-5.3', 'name' => 'GLM 5.3', 'upstream' => 'glm-5.3'],
-                        ['key' => 'minimax-m2.7', 'name' => 'MiniMax M2.7', 'upstream' => 'minimax-m2.7'],
-                        ['key' => 'minimax-m3', 'name' => 'MiniMax M3', 'upstream' => 'minimax-m3'],
-                        ['key' => 'kimi-k3', 'name' => 'Kimi K3', 'upstream' => 'kimi-k3'],
-                        ['key' => 'hy-3d-express', 'name' => 'Tencent Hunyuan 3D Express', 'upstream' => 'hy-3d-express'],
-                        ['key' => 'hy-3d-3.1', 'name' => 'Tencent Hunyuan 3D 3.1', 'upstream' => 'hy-3d-3.1']
+                $apiKey = !empty($customApiKey) ? preg_replace('/^Bearer\s+/i', '', $customApiKey) : '';
+                if (empty($apiKey)) {
+                    $stmtKey = $db->prepare("SELECT api_key FROM provider_keys WHERE provider_id = ? AND status = 'active' ORDER BY id ASC LIMIT 1");
+                    $stmtKey->execute([$providerId]);
+                    $keyRow = $stmtKey->fetch();
+                    if ($keyRow) {
+                        $apiKey = preg_replace('/^Bearer\s+/i', '', $keyRow['api_key']);
+                    }
+                }
+
+                $baseUrl = rtrim($provider['base_url'], '/');
+                $isNvidia = (stripos($provider['name'], 'nvidia') !== false || stripos($baseUrl, 'nvidia.com') !== false);
+
+                // Se não tem manual, tenta cURL
+                if (empty($importedModels)) {
+                    $endpointsToTry = [
+                        $baseUrl . '/models',
+                        $baseUrl . '/v1/models'
                     ];
+
+                    if (substr($baseUrl, -3) === '/v1') {
+                        $baseWithoutV1 = substr($baseUrl, 0, -3);
+                        array_unshift($endpointsToTry, $baseUrl . '/models');
+                        array_unshift($endpointsToTry, $baseWithoutV1 . '/v1/models');
+                    }
+
+                    $endpointsToTry = array_unique($endpointsToTry);
+                    $fetchedData = null;
+                    $lastHttpCode = 0;
+                    $curlErr = '';
+
+                    foreach ($endpointsToTry as $epUrl) {
+                        $ch = curl_init($epUrl);
+                        curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+                        curl_setopt($ch, CURLOPT_TIMEOUT, 20);
+                        curl_setopt($ch, CURLOPT_FOLLOWLOCATION, true);
+                        curl_setopt($ch, CURLOPT_MAXREDIRS, 3);
+                        curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, false);
+                        curl_setopt($ch, CURLOPT_SSL_VERIFYHOST, false);
+                        curl_setopt($ch, CURLOPT_HTTPHEADER, [
+                            'Authorization: Bearer ' . $apiKey,
+                            'api-key: ' . $apiKey,
+                            'Accept: application/json',
+                            'User-Agent: BRLoveAPI-Client/5.0'
+                        ]);
+                        $response = curl_exec($ch);
+                        $lastHttpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+                        $curlErr = curl_error($ch);
+                        curl_close($ch);
+
+                        if ($lastHttpCode === 200 && !empty($response)) {
+                            $json = json_decode($response, true);
+                            if (isset($json['data']) && is_array($json['data'])) {
+                                $fetchedData = $json['data'];
+                                break;
+                            } elseif (isset($json['models']) && is_array($json['models'])) {
+                                $fetchedData = $json['models'];
+                                break;
+                            } elseif (is_array($json) && !empty($json) && isset($json[0]['id'])) {
+                                $fetchedData = $json;
+                                break;
+                            }
+                        }
+                    }
+
+                    if (is_array($fetchedData)) {
+                        foreach ($fetchedData as $mItem) {
+                            $mKey = is_array($mItem) ? ($mItem['id'] ?? $mItem['model'] ?? '') : (string)$mItem;
+                            $mName = is_array($mItem) ? ($mItem['display_name'] ?? $mItem['name'] ?? $mKey) : $mKey;
+                            if (!empty($mKey)) {
+                                $importedModels[] = [
+                                    'upstream' => $mKey,
+                                    'name' => $mName
+                                ];
+                            }
+                        }
+                    }
+
+                    // Presets oficiais NVIDIA NIM caso a rota /models da NVIDIA esteja restrita ou bloqueada
+                    if (empty($importedModels) && $isNvidia) {
+                        $importedModels = [
+                            ['upstream' => 'meta/llama-3.3-70b-instruct', 'name' => 'Meta Llama 3.3 70B Instruct'],
+                            ['upstream' => 'nvidia/llama-3.1-nemotron-70b-instruct', 'name' => 'NVIDIA Llama 3.1 Nemotron 70B'],
+                            ['upstream' => 'deepseek-ai/deepseek-r1', 'name' => 'DeepSeek R1 (Reasoning)'],
+                            ['upstream' => 'meta/llama-3.1-405b-instruct', 'name' => 'Meta Llama 3.1 405B Instruct'],
+                            ['upstream' => 'mistralai/mixtral-8x22b-instruct-v0.1', 'name' => 'Mixtral 8x22B Instruct'],
+                            ['upstream' => 'nvidia/nemotron-4-340b-instruct', 'name' => 'NVIDIA Nemotron 4 340B Instruct'],
+                            ['upstream' => 'qwen/qwen2.5-72b-instruct', 'name' => 'Qwen 2.5 72B Instruct']
+                        ];
+                    }
                 }
 
                 if (!empty($importedModels)) {
@@ -162,9 +199,19 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
                         $stmtPM->execute([$providerId, $imp['upstream'], $imp['name']]);
                         $savedCount++;
                     }
-                    $msg = "⚡ Sucesso! Foram sincronizados $savedCount modelos do provedor '{$provider['name']}'! Eles estão disponíveis na lista suspensa ao cadastrar/editar modelos mascarados.";
+                    $msg = "⚡ Sucesso! Foram cadastrados $savedCount modelos para o provedor '{$provider['name']}'! Eles já estão disponíveis para você selecionar ou digitar no campo 'Modelo do Provedor'.";
                 } else {
-                    $error = 'Não foi possível buscar automaticamente os modelos. Verifique se a Base URL e a API Key do Provedor estão cadastradas corretamente.';
+                    $detailMsg = '';
+                    if ($lastHttpCode === 401) {
+                        $detailMsg = ' (HTTP 401: Chave de API inválida ou sem permissão na API externa)';
+                    } elseif ($lastHttpCode === 403) {
+                        $detailMsg = ' (HTTP 403: Acesso bloqueado pelo provedor)';
+                    } elseif ($lastHttpCode === 404) {
+                        $detailMsg = ' (HTTP 404: Endpoint /models não encontrado na Base URL informada)';
+                    } elseif (!empty($curlErr)) {
+                        $detailMsg = " (Erro de conexão: $curlErr)";
+                    }
+                    $error = 'Não foi possível buscar automaticamente os modelos' . $detailMsg . '. Verifique se a Base URL e a API Key estão corretas ou insira os modelos manualmente na tela de Modelos.';
                 }
             }
         }

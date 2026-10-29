@@ -105,11 +105,15 @@ export function initMcp(app, gateway) {
             finalSystemInstruction,
             rawModel,
             { temperature: 0.7, maxOutputTokens: 16384, tools: [] },
-            (tokenChunk) => {
+            (tokenChunk, toolCall, meta) => {
               if (tokenChunk) {
                 streamedText += tokenChunk;
                 if (typeof progressCallback === 'function') {
-                  progressCallback(streamedText.length);
+                  progressCallback({ type: 'text', length: streamedText.length, chunk: tokenChunk });
+                }
+              } else if (meta?.thinking) {
+                if (typeof progressCallback === 'function') {
+                  progressCallback({ type: 'thinking', chunk: meta.thought });
                 }
               }
             },
@@ -159,12 +163,12 @@ export function initMcp(app, gateway) {
 
   // Handler principal de SSE do MCP
   async function handleMcpSse(req, res) {
-    // Desabilitar timeouts no socket e na conexão HTTP para streaming ilimitado
-    req.setTimeout(0);
-    res.setTimeout(0);
+    // Timeout estendido de 10 minutos (600.000 ms) para subagentes e gerações longas com thinking profundo
+    req.setTimeout(600000);
+    res.setTimeout(600000);
     if (req.socket) {
-      req.socket.setTimeout(0);
-      req.socket.setKeepAlive(true, 10000);
+      req.socket.setTimeout(600000);
+      req.socket.setKeepAlive(true, 5000);
       req.socket.setNoDelay(true);
     }
 
@@ -213,22 +217,65 @@ export function initMcp(app, gateway) {
         system_prompt: z.string().optional().describe('Instrução de persona ou diretrizes de sistema para guiar o subagente')
       },
       async ({ prompt, modelo, system_prompt }, extra) => {
+        let progressHeartbeatTimer = null;
         try {
-          const progressToken = extra?._meta?.progressToken;
+          const progressToken =
+            extra?._meta?.progressToken ??
+            extra?.progressToken ??
+            extra?.params?._meta?.progressToken ??
+            null;
+
+          let charCount = 0;
+          let thinkingCount = 0;
+          let heartbeatCount = 0;
           let lastReported = 0;
 
-          const progressCallback = (len) => {
-            if (progressToken && Date.now() - lastReported > 2000) {
-              lastReported = Date.now();
+          const emitProgress = (progressVal, totalVal = 100) => {
+            if (progressToken !== null && progressToken !== undefined) {
               try {
                 server.server.notification({
                   method: 'notifications/progress',
                   params: {
                     progressToken: progressToken,
-                    progress: len
+                    progress: progressVal,
+                    total: totalVal
                   }
                 }).catch(() => {});
               } catch (e) {}
+            }
+            // Envia keepalive SSE na conexão HTTP para evitar timeout em proxies/gateways intermediários
+            if (res && !res.writableEnded && !res.destroyed) {
+              try {
+                res.write(': keepalive-progress\n\n');
+              } catch (e) {}
+            }
+          };
+
+          // 1. Notifica o início da execução imediatamente
+          emitProgress(1, 100);
+
+          // 2. Heartbeat de progresso periódico a cada 2.5 segundos
+          // Impede timeout de 60s em clientes MCP (Claude Code, Cline, Cursor, SDK) mesmo durante
+          // raciocínio interno prolongado (Claude Opus Thinking, Gemini Thinking, DeepSeek R1)
+          progressHeartbeatTimer = setInterval(() => {
+            heartbeatCount++;
+            const virtualProgress = charCount > 0
+              ? Math.max(charCount, Math.min(95, 5 + heartbeatCount * 2))
+              : Math.min(95, 2 + Math.floor(heartbeatCount * 1.5));
+            emitProgress(virtualProgress, 100);
+          }, 2500);
+
+          const progressCallback = (info) => {
+            const now = Date.now();
+            if (typeof info === 'number') {
+              charCount = info;
+            } else if (info && typeof info === 'object') {
+              if (info.length) charCount = info.length;
+              if (info.type === 'thinking') thinkingCount++;
+            }
+            if (now - lastReported > 2000) {
+              lastReported = now;
+              emitProgress(charCount || (5 + heartbeatCount * 2), 100);
             }
           };
 
@@ -240,6 +287,9 @@ export function initMcp(app, gateway) {
             progressCallback,
             abortSignal: extra?.signal
           });
+
+          // Notifica 100% concluído
+          emitProgress(100, 100);
 
           return {
             content: [
@@ -260,6 +310,10 @@ export function initMcp(app, gateway) {
               }
             ]
           };
+        } finally {
+          if (progressHeartbeatTimer) {
+            clearInterval(progressHeartbeatTimer);
+          }
         }
       }
     );
@@ -328,7 +382,7 @@ export function initMcp(app, gateway) {
       }
     );
 
-    // Heartbeat periódico (a cada 15 segundos) via comentário SSE ": keepalive\n\n"
+    // Heartbeat periódico (a cada 8 segundos) via comentário SSE ": keepalive\n\n"
     // Isso mantém proxies intermediários, Cloudflare (100s) e clientes Claude conectados durante raciocínios longos
     const keepAliveTimer = setInterval(() => {
       if (res.writableEnded || res.destroyed) {
@@ -340,7 +394,7 @@ export function initMcp(app, gateway) {
       } catch (e) {
         clearInterval(keepAliveTimer);
       }
-    }, 15000);
+    }, 8000);
 
     // Armazenar sessão
     activeSessions.set(sessionId, { transport, server, userKey, keepAliveTimer });
@@ -393,12 +447,12 @@ export function initMcp(app, gateway) {
   // ROTA POST: MENSAGENS E PROTOCOLO MCP COMPLETO (HTTP + SSE)
   // -------------------------------------------------------------
   app.post(['/mcp', '/v1/mcp', '/mcp/messages', '/v1/mcp/messages', '/mcp/sse', '/v1/mcp/sse'], async (req, res) => {
-    // Desabilitar timeouts no socket e na conexão HTTP para permitir requisições de longa duração
-    req.setTimeout(0);
-    res.setTimeout(0);
+    // Timeout estendido de 10 minutos (600.000 ms) para permitir requisições de longa duração e thinking models
+    req.setTimeout(600000);
+    res.setTimeout(600000);
     if (req.socket) {
-      req.socket.setTimeout(0);
-      req.socket.setKeepAlive(true, 10000);
+      req.socket.setTimeout(600000);
+      req.socket.setKeepAlive(true, 5000);
       req.socket.setNoDelay(true);
     }
 

@@ -29,9 +29,16 @@ import AntigravityAccountPool from './services/account_pool.js';
 import fs from 'fs';
 
 const app = express();
+app.disable('x-powered-by');
 app.use(cors());
 
-// app.use((req, res, next) => { console.log(`[GATEWAY] ${req.method} ${req.url}`); next(); });
+// Middleware de Segurança e Headers de Aceleração
+app.use((req, res, next) => {
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.setHeader('X-Frame-Options', 'SAMEORIGIN');
+  res.setHeader('X-Gateway-Version', '5.0-high-speed');
+  next();
+});
 
 app.use(express.json({ limit: '50mb' }));
 
@@ -87,13 +94,15 @@ try {
 }
 
 app.get('/mcp/debug-env', (req, res) => {
+  const remoteIp = req.socket?.remoteAddress || '';
+  const isLoopback = remoteIp === '127.0.0.1' || remoteIp === '::1' || remoteIp === '::ffff:127.0.0.1';
+  if (!isLoopback) {
+    return res.status(403).json({ error: 'Access restricted to localhost only.' });
+  }
   res.json({
-    dbConfig_user: dbConfig.user,
-    dbConfig_db: dbConfig.database,
-    has_password: Boolean(dbConfig.password),
-    phpDbPath: path.resolve(__dirname, '../../config/database.php'),
-    phpDbExists: fs.existsSync(path.resolve(__dirname, '../../config/database.php')),
-    env_user: process.env.DB_USER || null
+    status: 'ok',
+    database_connected: Boolean(dbConfig.database),
+    timestamp: new Date().toISOString()
   });
 });
 
@@ -268,9 +277,10 @@ app.all('/auth/antigravity/manual-callback', async (req, res) => {
 });
 
 // -------------------------------------------------------------
-// VERIFICADOR REAL DE COTA DO CLAUDE OPUS (PROBE NA GOOGLE API)
+// VERIFICADOR & SINCRONIZADOR UNIFICADO DE TODAS AS COTAS
+// Consulta cotas oficiais (Gemini, Sonnet, etc.) e executa probe real de Opus em uma única chamada atômica
 // -------------------------------------------------------------
-async function verifySingleAccountOpus(acc) {
+async function syncSingleAccount(acc, shouldProbeOpus = true) {
   let token = acc.access_token;
   try {
     const refreshed = await refreshAccessToken(acc.refresh_token);
@@ -280,122 +290,142 @@ async function verifySingleAccountOpus(acc) {
       await pool.query('UPDATE antigravity_accounts SET access_token = ?, token_expires_at = ? WHERE id = ?', [token, newExpiresAt, acc.id]);
     }
   } catch (e) {
-    console.warn(`[Opus Verify] Falha ao renovar token de ${acc.email}:`, e.message);
+    console.warn(`[Sync Quotas] Falha ao renovar token de ${acc.email}:`, e.message);
   }
 
-  const modelKey = 'claude-opus-4-6-thinking';
-  let hasOpus = false;
-  let remainingFraction = 0.0;
-  let message = '';
-  let resetTime = null;
-  let rawError = '';
-
+  // 1. Consulta oficial de cotas sem gerar prompt (não consome tokens do catálogo padrão)
+  let quotas = null;
   try {
-    // Probe ultra-leve de 1 token para testar a cota real do Claude Opus na Google API
-    await generateContent(
-      token,
-      acc.project_id || 'aicode-consumers',
-      modelKey,
-      [{ role: 'user', parts: [{ text: '1' }] }],
-      '',
-      { maxOutputTokens: 1, thinkingBudget: 0 }
-    );
-    hasOpus = true;
-    remainingFraction = 1.0;
-    message = 'Conta confirmada com cota ativa de Claude Opus!';
-  } catch (err) {
-    hasOpus = false;
-    remainingFraction = 0.0;
-    rawError = err.message || '';
-    const errData = err.data || {};
-    const meta = errData.error?.details?.[0]?.metadata || {};
-    const reason = errData.error?.details?.[0]?.reason || '';
-    resetTime = meta.quotaResetTimeStamp || null;
-
-    if (err.status === 429 || reason === 'QUOTA_EXHAUSTED' || rawError.includes('quota') || rawError.includes('exhausted')) {
-      message = 'Cota do Claude Opus esgotada no Google (429 QUOTA_EXHAUSTED).';
-    } else if (err.status === 403 || rawError.includes('subscription') || rawError.includes('permission')) {
-      message = 'Conta sem assinatura/permissão para Claude Opus (requer Google One AI Premium).';
-    } else {
-      message = `Opus indisponível: ${reason || err.message || 'Cota não liberada'}`;
-    }
+    quotas = await fetchUserQuotas(token, acc.project_id);
+  } catch (errQuota) {
+    console.warn(`[Sync Quotas] Falha em fetchUserQuotas para ${acc.email}:`, errQuota.message);
   }
 
-  // Atualizar quotas_json da conta no MySQL com quantidade exata de tokens
-  let maxTokens = 1048576;
-  let availableTokens = 0;
-  let consumedTokens = maxTokens;
-
-  try {
-    const [rows] = await pool.query('SELECT quotas_json FROM antigravity_accounts WHERE id = ?', [acc.id]);
-    let quotas = {};
-    if (rows.length > 0 && rows[0].quotas_json) {
-      try { quotas = JSON.parse(rows[0].quotas_json); } catch (e) { quotas = {}; }
-    }
-    if (!quotas.models) quotas.models = {};
-    if (!quotas.models[modelKey]) {
-      quotas.models[modelKey] = {
-        displayName: 'Claude Opus 4.6 (Thinking)',
-        maxTokens: 1048576,
-        modelProvider: 'Anthropic',
-        quotaInfo: {}
-      };
-    }
-    maxTokens = parseInt(quotas.models[modelKey].maxTokens || 1048576);
-    availableTokens = hasOpus ? Math.round(maxTokens * remainingFraction) : 0;
-    consumedTokens = Math.max(0, maxTokens - availableTokens);
-
-    quotas.models[modelKey].maxTokens = maxTokens;
-    quotas.models[modelKey].availableTokens = availableTokens;
-    quotas.models[modelKey].consumedTokens = consumedTokens;
-    quotas.models[modelKey].quotaInfo = quotas.models[modelKey].quotaInfo || {};
-    quotas.models[modelKey].quotaInfo.remainingFraction = remainingFraction;
-    quotas.models[modelKey].quotaInfo.hasOpusQuota = hasOpus;
-    quotas.models[modelKey].quotaInfo.availableTokens = availableTokens;
-    quotas.models[modelKey].quotaInfo.maxTokens = maxTokens;
-    quotas.models[modelKey].quotaInfo.checkedAt = new Date().toISOString();
-    quotas.models[modelKey].quotaInfo.statusMessage = message;
-    if (resetTime) quotas.models[modelKey].quotaInfo.resetTime = resetTime;
-
-    quotas.hasOpusQuota = hasOpus;
-    quotas.opusTokensAvailable = availableTokens;
-    quotas.opusTokensMax = maxTokens;
-    quotas.opusTokensConsumed = consumedTokens;
-    quotas.opusCheckedAt = new Date().toISOString();
-    quotas.opusMessage = message;
-
-    await pool.query('UPDATE antigravity_accounts SET quotas_json = ?, last_sync_at = NOW() WHERE id = ?', [
-      JSON.stringify(quotas),
-      acc.id
-    ]);
-
-    // Atualiza antigravity_model_quotas se existir
+  if (!quotas || !quotas.models) {
+    // Se a API não respondeu o catálogo completo, tenta carregar o existente
     try {
-      await pool.query(`
-        INSERT INTO antigravity_model_quotas (account_id, model_name, percentage, reset_time, raw_quota_info, updated_at)
-        VALUES (?, ?, ?, ?, ?, NOW())
-        ON DUPLICATE KEY UPDATE percentage = VALUES(percentage), reset_time = VALUES(reset_time), raw_quota_info = VALUES(raw_quota_info), updated_at = NOW()
-      `, [
-        acc.id,
-        modelKey,
-        hasOpus ? (remainingFraction * 100) : 0.00,
-        resetTime ? new Date(resetTime) : null,
-        JSON.stringify({ verified: true, hasOpus, availableTokens, maxTokens, message, checkedAt: new Date().toISOString() })
-      ]);
-    } catch (dbErr) {}
-
-  } catch (dbErr) {
-    console.error(`[Opus Verify] Erro ao salvar cota no banco para ${acc.email}:`, dbErr.message);
+      const [rows] = await pool.query('SELECT quotas_json FROM antigravity_accounts WHERE id = ?', [acc.id]);
+      if (rows.length > 0 && rows[0].quotas_json) {
+        quotas = JSON.parse(rows[0].quotas_json);
+      }
+    } catch (e) {}
   }
 
-  // Notifica o pool de contas em memória
+  if (!quotas) quotas = { models: {} };
+  if (!quotas.models) quotas.models = {};
+
+  // 2. Teste real e definitivo de cota do Claude Opus 4.6 (probe leve de 1 token)
+  const opusModelKey = 'claude-opus-4-6-thinking';
+  let hasOpus = false;
+  let opusFraction = 0.0;
+  let opusMessage = '';
+  let opusResetTime = null;
+
+  if (shouldProbeOpus) {
+    try {
+      await generateContent(
+        token,
+        acc.project_id || 'aicode-consumers',
+        opusModelKey,
+        [{ role: 'user', parts: [{ text: '1' }] }],
+        '',
+        { maxOutputTokens: 1, thinkingBudget: 0 }
+      );
+      hasOpus = true;
+      opusFraction = 1.0;
+      opusMessage = 'Conta confirmada com cota ativa de Claude Opus!';
+    } catch (err) {
+      hasOpus = false;
+      opusFraction = 0.0;
+      const rawError = err.message || '';
+      const errData = err.data || {};
+      const meta = errData.error?.details?.[0]?.metadata || {};
+      const reason = errData.error?.details?.[0]?.reason || '';
+      opusResetTime = meta.quotaResetTimeStamp || null;
+
+      if (err.status === 429 || reason === 'QUOTA_EXHAUSTED' || rawError.includes('quota') || rawError.includes('exhausted')) {
+        opusMessage = 'Cota do Claude Opus esgotada no Google (429 QUOTA_EXHAUSTED).';
+      } else if (err.status === 403 || rawError.includes('subscription') || rawError.includes('permission')) {
+        opusMessage = 'Conta sem assinatura/permissão para Claude Opus (requer Google One AI Premium).';
+      } else {
+        opusMessage = `Opus indisponível: ${reason || err.message || 'Cota não liberada'}`;
+      }
+    }
+  } else {
+    // Preserva o último probe conhecido
+    hasOpus = quotas.hasOpusQuota ?? false;
+    opusFraction = hasOpus ? 1.0 : 0.0;
+    opusMessage = quotas.opusMessage ?? '';
+    opusResetTime = quotas.models?.[opusModelKey]?.quotaInfo?.resetTime ?? null;
+  }
+
+  // 3. Integração do Claude Opus diretamente no mapa de modelos
+  let maxOpusTokens = 1048576;
+  if (!quotas.models[opusModelKey]) {
+    quotas.models[opusModelKey] = {
+      displayName: 'Claude Opus 4.6 (Thinking)',
+      maxTokens: maxOpusTokens,
+      modelProvider: 'Anthropic',
+      quotaInfo: {}
+    };
+  }
+  maxOpusTokens = parseInt(quotas.models[opusModelKey].maxTokens || 1048576);
+  const availableOpusTokens = hasOpus ? Math.round(maxOpusTokens * opusFraction) : 0;
+  const consumedOpusTokens = Math.max(0, maxOpusTokens - availableOpusTokens);
+
+  quotas.models[opusModelKey].maxTokens = maxOpusTokens;
+  quotas.models[opusModelKey].availableTokens = availableOpusTokens;
+  quotas.models[opusModelKey].consumedTokens = consumedOpusTokens;
+  quotas.models[opusModelKey].quotaInfo = quotas.models[opusModelKey].quotaInfo || {};
+  quotas.models[opusModelKey].quotaInfo.remainingFraction = opusFraction;
+  quotas.models[opusModelKey].quotaInfo.hasOpusQuota = hasOpus;
+  quotas.models[opusModelKey].quotaInfo.availableTokens = availableOpusTokens;
+  quotas.models[opusModelKey].quotaInfo.maxTokens = maxOpusTokens;
+  quotas.models[opusModelKey].quotaInfo.checkedAt = new Date().toISOString();
+  quotas.models[opusModelKey].quotaInfo.statusMessage = opusMessage;
+  if (opusResetTime) quotas.models[opusModelKey].quotaInfo.resetTime = opusResetTime;
+
+  quotas.hasOpusQuota = hasOpus;
+  quotas.opusTokensAvailable = availableOpusTokens;
+  quotas.opusTokensMax = maxOpusTokens;
+  quotas.opusTokensConsumed = consumedOpusTokens;
+  quotas.opusCheckedAt = new Date().toISOString();
+  quotas.opusMessage = opusMessage;
+
+  // 4. Avaliação de saúde geral da conta (Gemini Flash e Sonnet)
+  const geminiModel = quotas.models['gemini-3.8-flash-medium'] || quotas.models['gemini-3.8-flash-high'];
+  const remaining = geminiModel?.quotaInfo?.remainingFraction ?? 1.0;
+  const newStatus = remaining > 0.05 ? 'active' : 'quota_exhausted';
+
+  // 5. UPDATE ATÔMICO ÚNICO NO BANCO DE DADOS
+  await pool.query(
+    'UPDATE antigravity_accounts SET quotas_json = ?, status = ?, last_sync_at = NOW() WHERE id = ?',
+    [JSON.stringify(quotas), newStatus, acc.id]
+  );
+
+  // Atualiza antigravity_model_quotas
+  try {
+    await pool.query(`
+      INSERT INTO antigravity_model_quotas (account_id, model_name, percentage, reset_time, raw_quota_info, updated_at)
+      VALUES (?, ?, ?, ?, ?, NOW())
+      ON DUPLICATE KEY UPDATE percentage = VALUES(percentage), reset_time = VALUES(reset_time), raw_quota_info = VALUES(raw_quota_info), updated_at = NOW()
+    `, [
+      acc.id,
+      opusModelKey,
+      hasOpus ? 100.00 : 0.00,
+      opusResetTime ? new Date(opusResetTime) : null,
+      JSON.stringify({ verified: true, hasOpus, availableTokens: availableOpusTokens, maxTokens: maxOpusTokens, message: opusMessage, checkedAt: new Date().toISOString() })
+    ]);
+  } catch (dbErr) {}
+
+  // 6. Atualização de cooldowns no pool em memória
   if (accountPool) {
     const stat = accountPool.getAccountStats(acc.id);
     if (!stat.modelCooldowns) stat.modelCooldowns = new Map();
     if (!hasOpus) {
-      stat.modelCooldowns.set(modelKey, Date.now() + 86400000); // Cooldown prolongado para Opus
+      stat.modelCooldowns.set(opusModelKey, Date.now() + 86400000);
     } else {
-      stat.modelCooldowns.delete(modelKey);
+      stat.modelCooldowns.delete(opusModelKey);
     }
   }
 
@@ -403,79 +433,20 @@ async function verifySingleAccountOpus(acc) {
     id: acc.id,
     email: acc.email,
     name: acc.name,
+    success: true,
+    status: newStatus,
     hasOpus,
-    availableTokens,
-    maxTokens,
-    consumedTokens,
-    percentage: hasOpus ? Math.round(remainingFraction * 100) : 0,
-    tokensFormatted: `${availableTokens.toLocaleString('pt-BR')} / ${maxTokens.toLocaleString('pt-BR')} tokens`,
-    message,
-    resetTime
+    availableOpusTokens,
+    maxOpusTokens,
+    totalModels: Object.keys(quotas.models).length,
+    remainingGemini: (remaining * 100).toFixed(1) + '%',
+    opusMessage
   };
 }
 
-// -------------------------------------------------------------
-// SINCRONIZADOR DE COTA DE CONTA (CONSULTA DIRETA SEM GASTAR COTA)
-// -------------------------------------------------------------
-async function syncSingleAccount(acc, shouldProbeOpus = false) {
-  let token = acc.access_token;
-  try {
-    const refreshed = await refreshAccessToken(acc.refresh_token);
-    if (refreshed && refreshed.accessToken) {
-      token = refreshed.accessToken;
-      const newExpiresAt = new Date(Date.now() + 3600 * 1000);
-      await pool.query('UPDATE antigravity_accounts SET access_token = ?, token_expires_at = ? WHERE id = ?', [token, newExpiresAt, acc.id]);
-    }
-  } catch (e) {
-    console.warn(`[Sync] Falha ao renovar token de ${acc.email}:`, e.message);
-  }
-
-  // Consulta oficial das cotas sem gerar prompt (NAO GASTA TOKENS NEM COTA)
-  const quotas = await fetchUserQuotas(token, acc.project_id);
-  if (quotas && quotas.models) {
-    // Preservar a validação real do Opus se a conta já tiver sido testada e identificada como sem cota
-    let existingQuotas = null;
-    try {
-      if (acc.quotas_json) {
-        existingQuotas = typeof acc.quotas_json === 'string' ? JSON.parse(acc.quotas_json) : acc.quotas_json;
-      }
-    } catch (e) {}
-
-    const opusModelKey = 'claude-opus-4-6-thinking';
-    const existingOpus = existingQuotas?.models?.[opusModelKey]?.quotaInfo;
-    const hadOpusProbe = existingOpus && (existingOpus.hasOpusQuota !== undefined || existingQuotas?.hasOpusQuota !== undefined);
-
-    if (shouldProbeOpus) {
-      // Se solicitado probe explícito de opus
-      await verifySingleAccountOpus({ ...acc, access_token: token });
-    } else if (hadOpusProbe) {
-      // Mantém o estado real do probe do Opus (não deixa o catálogo do Google enganar e sobrescrever para 1.0)
-      if (quotas.models[opusModelKey]) {
-        quotas.models[opusModelKey].quotaInfo = quotas.models[opusModelKey].quotaInfo || {};
-        quotas.models[opusModelKey].quotaInfo.remainingFraction = existingOpus.remainingFraction ?? (existingQuotas.hasOpusQuota ? 1.0 : 0.0);
-        quotas.models[opusModelKey].quotaInfo.hasOpusQuota = existingOpus.hasOpusQuota ?? existingQuotas.hasOpusQuota;
-        quotas.models[opusModelKey].quotaInfo.checkedAt = existingOpus.checkedAt ?? existingQuotas.opusCheckedAt;
-        if (existingOpus.resetTime) quotas.models[opusModelKey].quotaInfo.resetTime = existingOpus.resetTime;
-        if (existingOpus.statusMessage) quotas.models[opusModelKey].quotaInfo.statusMessage = existingOpus.statusMessage;
-      }
-      quotas.hasOpusQuota = existingQuotas.hasOpusQuota;
-      quotas.opusCheckedAt = existingQuotas.opusCheckedAt;
-      quotas.opusMessage = existingQuotas.opusMessage;
-    }
-
-    // Modelos ativos suportados (Gemini 3.8 Flash Medium / High)
-    const geminiModel = quotas.models['gemini-3.8-flash-medium'] || quotas.models['gemini-3.8-flash-high'];
-    const remaining = geminiModel?.quotaInfo?.remainingFraction ?? 1.0;
-    const newStatus = remaining > 0.05 ? 'active' : 'quota_exhausted';
-
-    await pool.query(
-      'UPDATE antigravity_accounts SET quotas_json = ?, status = ?, last_sync_at = NOW() WHERE id = ?',
-      [JSON.stringify(quotas), newStatus, acc.id]
-    );
-    return { email: acc.email, success: true, count: Object.keys(quotas.models).length, status: newStatus, remaining: (remaining * 100).toFixed(1) + '%' };
-  } else {
-    return { email: acc.email, success: false };
-  }
+async function verifySingleAccountOpus(acc) {
+  // Encaminha diretamente para a função unificada garantindo consistência
+  return syncSingleAccount(acc, true);
 }
 
 // -------------------------------------------------------------
@@ -629,9 +600,14 @@ async function executeExternalProvider(providerId, targetEngine, incomingMessage
   `, [providerId]);
 
   if (keys.length === 0) {
-    throw new Error(`Nenhuma chave de API ativa encontrada para o provedor ${provider.name}.`);
+    throw new Error(`Nenhuma chave de API ativa encontrada para o provedor "${provider.name}". Cadastre uma chave em Provedores & Keys.`);
   }
   const pKey = keys[0];
+
+  let cleanKey = (pKey.api_key || '').trim();
+  if (cleanKey.toLowerCase().startsWith('bearer ')) {
+    cleanKey = cleanKey.slice(7).trim();
+  }
 
   const messages = [];
   if (systemInstruction) {
@@ -641,7 +617,18 @@ async function executeExternalProvider(providerId, targetEngine, incomingMessage
   const normalized = normalizeMessagesForOpenAI(incomingMessages);
   messages.push(...normalized);
 
-  const endpoint = provider.base_url.replace(/\/+$/, '') + '/chat/completions';
+  let baseUrl = (provider.base_url || '').trim().replace(/\/+$/, '');
+  let endpoint = '';
+  if (baseUrl.endsWith('/chat/completions')) {
+    endpoint = baseUrl;
+  } else if (baseUrl.endsWith('/v1')) {
+    endpoint = baseUrl + '/chat/completions';
+  } else if (baseUrl.includes('/v1/')) {
+    endpoint = baseUrl + '/chat/completions';
+  } else {
+    // Adiciona /v1/chat/completions caso o usuário tenha cadastrado a URL raiz (ex: https://integrate.api.nvidia.com)
+    endpoint = baseUrl + '/v1/chat/completions';
+  }
 
   const reqBody = {
     model: targetEngine,
@@ -653,28 +640,54 @@ async function executeExternalProvider(providerId, targetEngine, incomingMessage
     reqBody.tools = sanitizeToolsForProvider(rawTools);
   }
 
-  const res = await fetch(endpoint, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'Authorization': `Bearer ${pKey.api_key}`
-    },
-    body: JSON.stringify(reqBody),
-    signal: AbortSignal.timeout(300000) // 5 minutos para raciocínios longos e thinking models
-  });
+  let res;
+  try {
+    res = await fetch(endpoint, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${cleanKey}`,
+        'User-Agent': 'BRLoveAPI-Gateway/5.0'
+      },
+      body: JSON.stringify(reqBody),
+      signal: AbortSignal.timeout(600000) // 10 minutos para raciocínios longos e thinking models
+    });
+  } catch (netErr) {
+    // Se falhou e tinha /v1 adicionado automaticamente, tenta fallback para /chat/completions puro
+    if (endpoint.endsWith('/v1/chat/completions')) {
+      const altEndpoint = baseUrl + '/chat/completions';
+      try {
+        res = await fetch(altEndpoint, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${cleanKey}`,
+            'User-Agent': 'BRLoveAPI-Gateway/5.0'
+          },
+          body: JSON.stringify(reqBody),
+          signal: AbortSignal.timeout(600000)
+        });
+        endpoint = altEndpoint;
+      } catch (altErr) {
+        throw new Error(`[${provider.name}] Erro de conexão de rede ao contatar ${endpoint}: ${netErr.message}`);
+      }
+    } else {
+      throw new Error(`[${provider.name}] Erro de conexão de rede ao contatar ${endpoint}: ${netErr.message}`);
+    }
+  }
 
   const resText = await res.text();
   let json;
   try {
     json = JSON.parse(resText);
   } catch (e) {
-    throw new Error(`${provider.name} retornou resposta inválida: ${resText.slice(0, 200)}`);
+    throw new Error(`[${provider.name}] Retornou resposta não-JSON (HTTP ${res.status}): ${resText.slice(0, 250)}`);
   }
 
   if (!res.ok) {
-    const errMsg = json?.error?.message || json?.message || `HTTP ${res.status}`;
+    const errMsg = json?.error?.message || json?.error || json?.message || `HTTP ${res.status}`;
     await pool.query('UPDATE provider_keys SET error_count = error_count + 1 WHERE id = ?', [pKey.id]).catch(() => { });
-    throw new Error(`${provider.name}: ${errMsg}`);
+    throw new Error(`[${provider.name}] Erro ao chamar modelo "${targetEngine}": ${errMsg} (Status ${res.status})`);
   }
 
   await pool.query('UPDATE provider_keys SET last_used_at = NOW(), error_count = 0 WHERE id = ?', [pKey.id]).catch(() => { });
@@ -702,9 +715,38 @@ async function executeExternalProvider(providerId, targetEngine, incomingMessage
   return { replyText, toolCalls: extToolCalls, provider, account: null };
 }
 
-// Autenticação pura (sem req/res) para uso no WebSocket Realtime
+// -------------------------------------------------------------
+// CACHES EM MEMÓRIA DE ALTA PERFORMANCE (ZERO-LATENCY ACCELERATION)
+// -------------------------------------------------------------
+const apiKeyCache = new Map();
+const API_KEY_CACHE_TTL = 45000; // 45 segundos
+
+const modelConfigCache = new Map();
+const MODEL_CONFIG_CACHE_TTL = 30000; // 30 segundos
+
+// Limpeza periódica preventiva a cada 2 minutos
+setInterval(() => {
+  const now = Date.now();
+  for (const [k, v] of apiKeyCache.entries()) {
+    if (v.expiresAt <= now) apiKeyCache.delete(k);
+  }
+  for (const [k, v] of modelConfigCache.entries()) {
+    if (v.expiresAt <= now) modelConfigCache.delete(k);
+  }
+}, 120000);
+
+// Autenticação pura ultrarrápida com cache em memória
 async function authenticateApiKey(apiKey) {
   if (!apiKey) throw new Error('API Key não fornecida.');
+
+  const now = Date.now();
+  const cached = apiKeyCache.get(apiKey);
+  if (cached && cached.expiresAt > now) {
+    if (cached.userKey.balance_tokens <= 0) {
+      throw new Error('Saldo de cotas/tokens esgotado. Recarregue no painel.');
+    }
+    return cached.userKey;
+  }
 
   const [keys] = await pool.query(`
     SELECT k.id as key_id, k.tokens_used as key_tokens, u.id as user_id, u.role as user_role, u.balance_tokens, u.tokens_used as user_tokens, u.status as user_status, k.status as key_status
@@ -722,6 +764,11 @@ async function authenticateApiKey(apiKey) {
   if (userKey.balance_tokens <= 0) {
     throw new Error('Saldo de cotas/tokens esgotado. Recarregue no painel.');
   }
+
+  apiKeyCache.set(apiKey, {
+    userKey,
+    expiresAt: now + API_KEY_CACHE_TTL
+  });
 
   return userKey;
 }
@@ -760,29 +807,45 @@ async function authenticateClient(req, res) {
   }
 }
 
-// Classificador inteligente de complexidade da mensagem para economizar cota
-function classifyRequestComplexity(textSample = '', totalChars = 0) {
+// Classificador inteligente e contextual de complexidade da mensagem
+function classifyRequestComplexity(textSample = '', totalChars = 0, totalMessagesCount = 1) {
   const lower = (textSample || '').toLowerCase();
 
-  // 1. Padrões de alta complexidade (Código, Arquitetura, Raciocínio pesado, Debugging longo)
-  const heavyKeywords = [
-    '```', 'refactor', 'arquitetura', 'architecture', 'debug', 'stack trace', 'exception',
-    'dockerfile', 'kubernetes', 'algorithm', 'complexidade', 'sql migration', 'benchmark',
-    'thread safety', 'concurrency', 'deadlock', 'ast ', 'compiler', 'analise detalhada',
-    'step-by-step reasoning', 'pense com calma', 'demonstre matematicamente', 'proof'
+  // 1. Padrões de alta complexidade: código, arquitetura, queries, regex, debugging profundo
+  const codeSignals = [
+    '```', 'def ', 'function ', 'class ', 'import ', 'export ', 'interface ', 'struct ',
+    'SELECT ', 'INSERT ', 'UPDATE ', 'DELETE ', 'JOIN ', 'FROM ', 'WHERE ',
+    'docker', 'k8s', 'kubernetes', 'nginx', 'regex', 'tsconfig', 'composer.json',
+    'package.json', 'migration', 'schema', 'entity'
   ];
 
-  // Se tem blocos de código grandes ou mais de 2500 caracteres, ou palavras-chave pesadas
-  if (totalChars > 2500 || lower.includes('```') || heavyKeywords.some(kw => lower.includes(kw))) {
+  const heavyKeywords = [
+    'refactor', 'arquitetura', 'architecture', 'debug', 'stack trace', 'exception',
+    'segmentation fault', 'memory leak', 'nullpointer', 'traceback', 'algorithm',
+    'complexidade', 'sql migration', 'benchmark', 'thread safety', 'concurrency',
+    'deadlock', 'ast ', 'compiler', 'analise detalhada', 'step-by-step reasoning',
+    'pense com calma', 'demonstre matematicamente', 'proof', 'prova matemática',
+    'engenharia reversa', 'reverse engineer', 'segurança', 'vulnerability', 'cve-'
+  ];
+
+  const hasCodeOrHeavy = codeSignals.some(s => textSample.includes(s)) || heavyKeywords.some(kw => lower.includes(kw));
+
+  // Prompts com blocos de código grandes, mais de 2000 caracteres ou conversas com histórico longo (> 10 turnos)
+  if (totalChars > 2000 || hasCodeOrHeavy || totalMessagesCount > 10) {
     return 'heavy';
   }
 
-  // 2. Padrões de complexidade média (perguntas explicativas, dúvidas gerais, resumos moderados)
-  if (totalChars > 500 || lower.length > 250 || lower.includes('como fazer') || lower.includes('explique') || lower.includes('resuma')) {
+  // 2. Padrões de complexidade média: explicações, resumos, comparações, redações técnicas
+  const mediumKeywords = [
+    'como fazer', 'explique', 'resuma', 'qual a diferenca', 'compare', 'analise',
+    'redija', 'crie um texto', 'traduza o texto', 'planejamento', 'roteiro', 'passo a passo'
+  ];
+
+  if (totalChars > 350 || lower.length > 180 || totalMessagesCount > 4 || mediumKeywords.some(mk => lower.includes(mk))) {
     return 'medium';
   }
 
-  // 3. Padrões leves / básicos (saudações, comandos diretos, perguntas curtas)
+  // 3. Padrões leves / básicos: saudações, comandos diretos, validações, perguntas pontuais
   return 'fast';
 }
 
@@ -811,28 +874,40 @@ export function normalizeAntigravityModel(model) {
 
 async function resolveModelConfig(requestedModel, incomingContents = []) {
   const cleanModel = (requestedModel || '').replace(/[^\w\.\-]/g, '');
+  const now = Date.now();
 
-  let [rows] = await pool.query(`
-    SELECT id, model_key, name, provider_id, upstream_model, multiplier, pre_prompt, is_admin_only, is_realtime, is_smart_routing, routing_fast_model, routing_fast_multiplier, routing_medium_model, routing_medium_multiplier, routing_heavy_model, routing_heavy_multiplier
-    FROM models 
-    WHERE (model_key = ? OR name = ? OR upstream_model = ?) AND status = 'active'
-    LIMIT 1
-  `, [cleanModel, requestedModel, cleanModel]);
-
-  if (rows.length === 0) {
-    const baseKey = cleanModel.split('-202')[0].replace('-latest', '');
-    [rows] = await pool.query(`
+  let row = null;
+  const cachedModel = modelConfigCache.get(cleanModel) || modelConfigCache.get(requestedModel);
+  if (cachedModel && cachedModel.expiresAt > now) {
+    row = cachedModel.row;
+  } else {
+    let [rows] = await pool.query(`
       SELECT id, model_key, name, provider_id, upstream_model, multiplier, pre_prompt, is_admin_only, is_realtime, is_smart_routing, routing_fast_model, routing_fast_multiplier, routing_medium_model, routing_medium_multiplier, routing_heavy_model, routing_heavy_multiplier
       FROM models 
-      WHERE (model_key LIKE ? OR name LIKE ? OR upstream_model LIKE ?) AND status = 'active'
+      WHERE (model_key = ? OR name = ? OR upstream_model = ?) AND status = 'active'
       LIMIT 1
-    `, [`%${baseKey}%`, `%${baseKey}%`, `%${baseKey}%`]);
+    `, [cleanModel, requestedModel, cleanModel]);
+
+    if (rows.length === 0) {
+      const baseKey = cleanModel.split('-202')[0].replace('-latest', '');
+      [rows] = await pool.query(`
+        SELECT id, model_key, name, provider_id, upstream_model, multiplier, pre_prompt, is_admin_only, is_realtime, is_smart_routing, routing_fast_model, routing_fast_multiplier, routing_medium_model, routing_medium_multiplier, routing_heavy_model, routing_heavy_multiplier
+        FROM models 
+        WHERE (model_key LIKE ? OR name LIKE ? OR upstream_model LIKE ?) AND status = 'active'
+        LIMIT 1
+      `, [`%${baseKey}%`, `%${baseKey}%`, `%${baseKey}%`]);
+    }
+
+    if (rows.length > 0) {
+      row = rows[0];
+      modelConfigCache.set(cleanModel, { row, expiresAt: now + MODEL_CONFIG_CACHE_TTL });
+      modelConfigCache.set(requestedModel, { row, expiresAt: now + MODEL_CONFIG_CACHE_TTL });
+    }
   }
 
   const globalPrePrompt = await getSetting('pre_prompt', '');
 
-  if (rows.length > 0) {
-    const row = rows[0];
+  if (row) {
     const modelPrompt = row.pre_prompt ? row.pre_prompt.trim() : '';
     const combinedPrompt = [globalPrePrompt, modelPrompt].filter(Boolean).join('\n\n');
 
@@ -843,6 +918,8 @@ async function resolveModelConfig(requestedModel, incomingContents = []) {
     if (row.is_smart_routing == 1) {
       // Pega especificamente a ÚLTIMA mensagem do usuário para não deixar as instruções internas do sistema/CLI distorcerem a classificação
       let userPrompt = '';
+      const totalMessages = Array.isArray(incomingContents) ? incomingContents.length : 1;
+
       if (Array.isArray(incomingContents)) {
         for (let i = incomingContents.length - 1; i >= 0; i--) {
           const item = incomingContents[i];
@@ -860,7 +937,7 @@ async function resolveModelConfig(requestedModel, incomingContents = []) {
         }
       }
 
-      const complexity = classifyRequestComplexity(userPrompt, userPrompt.length);
+      const complexity = classifyRequestComplexity(userPrompt, userPrompt.length, totalMessages);
 
       if (complexity === 'fast' && row.routing_fast_model) {
         chosenEngine = row.routing_fast_model;
@@ -954,6 +1031,16 @@ async function logUsage(userKey, model, promptTokens, completionTokens, accountI
     await pool.query(`
       UPDATE api_keys SET tokens_used = tokens_used + ? WHERE id = ?
     `, [billedTokens, userKey.key_id]);
+
+    // Atualiza saldo em cache de alta velocidade para evitar queries repetitivas
+    for (const [key, val] of apiKeyCache.entries()) {
+      if (val.userKey.user_id === userKey.user_id) {
+        val.userKey.balance_tokens = Math.max(0, val.userKey.balance_tokens - billedTokens);
+        if (val.userKey.balance_tokens <= 0) {
+          apiKeyCache.delete(key);
+        }
+      }
+    }
 
     if (accountId) {
       await pool.query(`

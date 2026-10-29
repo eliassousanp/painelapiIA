@@ -168,9 +168,16 @@ function send_whatsapp_otp(string $phone): array {
 
     $res = whatsapp_send_text($cleanPhone, $message);
 
+    // Nunca expor o código OTP na resposta pública por motivos críticos de segurança
+    if (isset($res['success']) && !$res['success']) {
+        return [
+            'success' => false,
+            'error' => 'Não foi possível enviar a mensagem no WhatsApp. Verifique se o número está correto e tente novamente.'
+        ];
+    }
+
     return [
         'success' => true,
-        'otp_code' => $otpCode,
         'message' => 'Código de verificação enviado para seu WhatsApp!'
     ];
 }

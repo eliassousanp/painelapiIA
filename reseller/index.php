@@ -23,9 +23,12 @@ try {
 }
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
-    $action = $_POST['action'];
+    if (!validate_csrf()) {
+        $error = 'Sessão expirada ou token de segurança CSRF inválido. Recarregue a página.';
+    } else {
+        $action = $_POST['action'];
 
-    if ($action === 'create_client') {
+        if ($action === 'create_client') {
         $name = trim($_POST['name'] ?? '');
         $whatsapp = trim($_POST['whatsapp'] ?? '');
         $email = trim($_POST['email'] ?? '');
@@ -154,6 +157,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
         $stmt->execute([$newStatus, $clientId, $resellerId]);
         $msg = 'Status do cliente alterado com sucesso!';
     }
+    }
 }
 
 // Buscar clientes da revenda
@@ -195,166 +199,172 @@ require_once __DIR__ . '/includes/header.php';
 
     <!-- Summary Cards Grid para o Revendedor -->
     <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-5">
-        <div class="glass p-6 rounded-3xl border border-amber-500/20 relative overflow-hidden">
+        <div class="glass-card p-6 rounded-3xl border relative overflow-hidden group hover:-translate-y-1 transition duration-300" style="border-color: rgba(245, 158, 11, 0.25);">
             <div class="flex items-center justify-between mb-3">
-                <span class="text-xs font-bold text-amber-300 uppercase tracking-wider">Banca de Tokens (Revenda)</span>
-                <div class="w-9 h-9 rounded-xl bg-gradient-to-tr from-amber-500 to-yellow-300 text-gray-950 flex items-center justify-center text-sm font-bold shadow-lg">
+                <span class="text-xs font-bold uppercase tracking-wider text-amber-500">Banca de Tokens (Revenda)</span>
+                <div class="w-10 h-10 rounded-2xl bg-gradient-to-tr from-amber-500 to-yellow-300 text-gray-950 flex items-center justify-center text-sm font-bold shadow-lg shadow-amber-500/20">
                     <i class="fa-solid fa-wallet"></i>
                 </div>
             </div>
-            <div class="text-2xl sm:text-3xl font-extrabold text-white font-mono">
+            <div class="text-2xl sm:text-3xl font-extrabold font-mono tracking-tight" style="color: var(--text-heading);">
                 <?= number_format($reseller['balance_tokens'], 0, ',', '.') ?>
             </div>
-            <div class="flex items-center justify-between mt-2">
-                <p class="text-[11px] text-amber-400">Tokens no seu pool</p>
-                <a href="plans.php" class="text-[11px] text-amber-300 hover:underline font-bold">Recarregar PIX <i class="fa-solid fa-arrow-right"></i></a>
+            <div class="flex items-center justify-between mt-3 text-xs">
+                <span style="color: var(--text-muted);">Tokens no seu pool</span>
+                <a href="plans.php" class="text-amber-500 hover:underline font-bold flex items-center gap-1">Recarregar PIX <i class="fa-solid fa-arrow-right text-[10px]"></i></a>
             </div>
         </div>
 
-        <div class="glass p-6 rounded-3xl border border-cyan-500/20 relative overflow-hidden">
+        <div class="glass-card p-6 rounded-3xl border relative overflow-hidden group hover:-translate-y-1 transition duration-300" style="border-color: rgba(6, 182, 212, 0.25);">
             <div class="flex items-center justify-between mb-3">
-                <span class="text-xs font-bold text-cyan-300 uppercase tracking-wider">Clientes Cadastrados</span>
-                <div class="w-9 h-9 rounded-xl bg-gradient-to-tr from-cyan-600 to-teal-400 text-white flex items-center justify-center text-sm font-bold shadow-lg">
+                <span class="text-xs font-bold uppercase tracking-wider text-cyan-400">Clientes Cadastrados</span>
+                <div class="w-10 h-10 rounded-2xl bg-gradient-to-tr from-cyan-600 to-teal-400 text-white flex items-center justify-center text-sm font-bold shadow-lg shadow-cyan-500/20">
                     <i class="fa-solid fa-users"></i>
                 </div>
             </div>
-            <div class="text-2xl sm:text-3xl font-extrabold text-cyan-400 font-mono">
+            <div class="text-2xl sm:text-3xl font-extrabold text-cyan-400 font-mono tracking-tight">
                 <?= $totalClients ?>
             </div>
-            <p class="text-[11px] text-gray-400 mt-2">Clientes ativos na sua carteira</p>
+            <p class="text-xs mt-3" style="color: var(--text-muted);">Clientes ativos na sua carteira</p>
         </div>
 
-        <div class="glass p-6 rounded-3xl border border-indigo-500/20 relative overflow-hidden">
+        <div class="glass-card p-6 rounded-3xl border relative overflow-hidden group hover:-translate-y-1 transition duration-300" style="border-color: rgba(147, 51, 234, 0.25);">
             <div class="flex items-center justify-between mb-3">
-                <span class="text-xs font-bold text-indigo-300 uppercase tracking-wider">Tokens em Uso na Rede</span>
-                <div class="w-9 h-9 rounded-xl bg-gradient-to-tr from-indigo-600 to-purple-400 text-white flex items-center justify-center text-sm font-bold shadow-lg">
+                <span class="text-xs font-bold uppercase tracking-wider text-purple-400">Tokens em Uso na Rede</span>
+                <div class="w-10 h-10 rounded-2xl bg-gradient-to-tr from-indigo-600 to-purple-400 text-white flex items-center justify-center text-sm font-bold shadow-lg shadow-purple-500/20">
                     <i class="fa-solid fa-chart-pie"></i>
                 </div>
             </div>
-            <div class="text-2xl sm:text-3xl font-extrabold text-indigo-300 font-mono">
+            <div class="text-2xl sm:text-3xl font-extrabold font-mono tracking-tight" style="color: var(--text-heading);">
                 <?= number_format($totalTokensDistributed, 0, ',', '.') ?>
             </div>
-            <p class="text-[11px] text-gray-400 mt-2">Saldo total atribuído aos seus clientes</p>
+            <p class="text-xs mt-3" style="color: var(--text-muted);">Saldo total atribuído aos clientes</p>
         </div>
     </div>
 
-    <!-- Formulário de Cadastro de Novo Cliente (Suporta Seleção de Planos Prontos ou Tokens Avulsos) -->
-    <div class="glass-card p-6 rounded-3xl border border-gray-800 space-y-4">
-        <div class="border-b border-gray-800 pb-4">
-            <h3 class="text-base font-bold text-white flex items-center">
-                <i class="fa-solid fa-user-plus text-amber-400 mr-2"></i> Cadastrar Novo Cliente & Atribuir Plano
+    <!-- Formulário de Cadastro de Novo Cliente -->
+    <div class="glass-card p-6 sm:p-7 rounded-3xl border space-y-5">
+        <div class="border-b pb-4" style="border-color: var(--border-color);">
+            <h3 class="text-base font-bold flex items-center" style="color: var(--text-heading);">
+                <i class="fa-solid fa-user-plus text-amber-500 mr-2.5"></i> Cadastrar Novo Cliente & Atribuir Plano
             </h3>
-            <p class="text-xs text-gray-400 mt-0.5">Selecione um Plano Pronto ou digite a quantidade de tokens avulsa que deseja creditar.</p>
+            <p class="text-xs mt-1" style="color: var(--text-muted);">Selecione um Plano Pronto ou digite a quantidade de tokens avulsa que deseja creditar.</p>
         </div>
 
         <form method="POST" action="index.php" class="space-y-4 text-xs">
+            <?= csrf_field() ?>
             <input type="hidden" name="action" value="create_client">
             <input type="hidden" name="plan_type" id="create_plan_type" value="Personalizado">
 
             <div class="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-4">
-                <div class="space-y-1">
-                    <label class="font-semibold text-gray-300">Nome do Cliente</label>
-                    <input type="text" name="name" placeholder="Ex: João da Silva" required class="w-full px-3.5 py-2.5 rounded-xl bg-gray-900 border border-gray-800 text-white focus:outline-none focus:border-amber-500">
+                <div class="space-y-1.5">
+                    <label class="font-bold" style="color: var(--text-heading);">Nome do Cliente</label>
+                    <input type="text" name="name" placeholder="Ex: João da Silva" required class="w-full px-3.5 py-2.5 rounded-xl border focus:outline-none focus:ring-2 focus:ring-amber-500/40" style="background: var(--bg-surface-elevated); border-color: var(--border-color); color: var(--text-heading);">
                 </div>
 
-                <div class="space-y-1">
-                    <label class="font-semibold text-gray-300">WhatsApp (com DDD)</label>
-                    <input type="text" name="whatsapp" placeholder="5511999999999" required class="w-full px-3.5 py-2.5 rounded-xl bg-gray-900 border border-gray-800 text-white focus:outline-none focus:border-amber-500 font-mono">
+                <div class="space-y-1.5">
+                    <label class="font-bold" style="color: var(--text-heading);">WhatsApp (com DDD)</label>
+                    <input type="text" name="whatsapp" placeholder="5511999999999" required class="w-full px-3.5 py-2.5 rounded-xl border focus:outline-none focus:ring-2 focus:ring-amber-500/40 font-mono" style="background: var(--bg-surface-elevated); border-color: var(--border-color); color: var(--text-heading);">
                 </div>
 
-                <div class="space-y-1">
-                    <label class="font-semibold text-gray-300">E-mail (opcional)</label>
-                    <input type="email" name="email" placeholder="cliente@email.com" class="w-full px-3.5 py-2.5 rounded-xl bg-gray-900 border border-gray-800 text-white focus:outline-none focus:border-amber-500">
+                <div class="space-y-1.5">
+                    <label class="font-bold" style="color: var(--text-heading);">E-mail (opcional)</label>
+                    <input type="email" name="email" placeholder="cliente@email.com" class="w-full px-3.5 py-2.5 rounded-xl border focus:outline-none focus:ring-2 focus:ring-amber-500/40" style="background: var(--bg-surface-elevated); border-color: var(--border-color); color: var(--text-heading);">
                 </div>
 
-                <div class="space-y-1">
-                    <label class="font-semibold text-gray-300">Senha Inicial</label>
-                    <input type="password" name="password" placeholder="Senha123" required class="w-full px-3.5 py-2.5 rounded-xl bg-gray-900 border border-gray-800 text-white focus:outline-none focus:border-amber-500">
+                <div class="space-y-1.5">
+                    <label class="font-bold" style="color: var(--text-heading);">Senha Inicial</label>
+                    <input type="password" name="password" placeholder="Mínimo 6 caracteres" required class="w-full px-3.5 py-2.5 rounded-xl border focus:outline-none focus:ring-2 focus:ring-amber-500/40" style="background: var(--bg-surface-elevated); border-color: var(--border-color); color: var(--text-heading);">
                 </div>
 
-                <div class="space-y-1">
-                    <label class="font-semibold text-amber-300">Selecione o Plano Pronto (Opcional)</label>
-                    <select id="planPresetSelect" onchange="onPlanPresetChange(this)" class="w-full px-3.5 py-2.5 rounded-xl bg-gray-900 border border-amber-500/30 text-amber-300 focus:outline-none focus:border-amber-500">
+                <div class="space-y-1.5">
+                    <label class="font-bold text-amber-500">Selecione o Plano Pronto (Opcional)</label>
+                    <select id="planPresetSelect" onchange="onPlanPresetChange(this)" class="w-full px-3.5 py-2.5 rounded-xl border focus:outline-none focus:ring-2 focus:ring-amber-500/40 font-semibold" style="background: var(--bg-surface-elevated); border-color: rgba(245, 158, 11, 0.4); color: #f59e0b;">
                         <option value="">-- Escolher um Plano Pronto --</option>
                         <?php foreach ($activePlans as $pl): ?>
                             <option value="<?= $pl['tokens_amount'] ?>" data-name="<?= htmlspecialchars($pl['name']) ?>">
-                                <?= htmlspecialchars($pl['name']) ?> (<?= number_format($pl['tokens_amount'], 0, ',', '.') ?> Tokens) - Custo Atacado: R$ <?= number_format($pl['reseller_price'] ?? ($pl['price'] * 0.5), 2, ',', '.') ?>
+                                <?= htmlspecialchars($pl['name']) ?> (<?= number_format($pl['tokens_amount'], 0, ',', '.') ?> Tokens)
                             </option>
                         <?php endforeach; ?>
                     </select>
                 </div>
 
-                <div class="space-y-1">
-                    <label class="font-semibold text-gray-300">Tokens Iniciais (Crédito)</label>
-                    <input type="number" name="initial_tokens" id="create_initial_tokens" placeholder="5000000" required class="w-full px-3.5 py-2.5 rounded-xl bg-gray-900 border border-gray-800 text-white focus:outline-none focus:border-amber-500 font-mono">
+                <div class="space-y-1.5">
+                    <label class="font-bold" style="color: var(--text-heading);">Tokens Iniciais (Crédito)</label>
+                    <input type="number" name="initial_tokens" id="create_initial_tokens" placeholder="5000000" required class="w-full px-3.5 py-2.5 rounded-xl border focus:outline-none focus:ring-2 focus:ring-amber-500/40 font-mono font-bold" style="background: var(--bg-surface-elevated); border-color: var(--border-color); color: var(--text-heading);">
                 </div>
             </div>
 
             <div class="flex justify-end pt-2">
-                <button type="submit" class="px-6 py-2.5 rounded-xl bg-gradient-to-r from-amber-500 to-yellow-400 hover:from-amber-400 hover:to-yellow-300 text-gray-950 font-bold text-xs shadow-lg transition flex items-center">
-                    <i class="fa-solid fa-plus mr-1.5"></i> Cadastrar Cliente & Atribuir Plano
+                <button type="submit" class="px-6 py-2.5 rounded-xl bg-gradient-to-r from-amber-500 to-yellow-400 hover:from-amber-400 hover:to-yellow-300 text-gray-950 font-bold text-xs shadow-lg shadow-amber-500/20 transition flex items-center cursor-pointer hover:scale-[1.02]">
+                    <i class="fa-solid fa-plus mr-2"></i> Cadastrar Cliente & Atribuir Plano
                 </button>
             </div>
         </form>
     </div>
 
     <!-- Tabela de Clientes da Revenda -->
-    <div class="glass-card p-6 rounded-3xl border border-gray-800 space-y-4">
-        <div class="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
+    <div class="glass-card p-6 sm:p-7 rounded-3xl border space-y-4">
+        <div class="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 border-b pb-4" style="border-color: var(--border-color);">
             <div>
-                <h3 class="text-base font-bold text-white flex items-center">
-                    <i class="fa-solid fa-users text-cyan-400 mr-2"></i> Meus Clientes Gerenciados
+                <h3 class="text-base font-bold flex items-center" style="color: var(--text-heading);">
+                    <i class="fa-solid fa-users text-cyan-400 mr-2.5"></i> Meus Clientes Gerenciados
                 </h3>
-                <p class="text-xs text-gray-400">Atribua novos planos, altere saldo ou bloqueie acesso.</p>
+                <p class="text-xs mt-0.5" style="color: var(--text-muted);">Atribua novos planos, recarregue tokens ou controle o status de acesso.</p>
             </div>
-            <input type="text" id="clientSearch" onkeyup="filterClients()" placeholder="Buscar cliente por nome ou zap..." class="px-4 py-2 text-xs rounded-xl bg-gray-900 border border-gray-800 text-white w-full sm:w-64 focus:outline-none focus:border-amber-500">
+            <div class="relative w-full sm:w-72">
+                <i class="fa-solid fa-magnifying-glass absolute left-3.5 top-1/2 -translate-y-1/2 text-xs" style="color: var(--text-muted);"></i>
+                <input type="text" id="clientSearch" onkeyup="filterClients()" placeholder="Buscar por nome ou zap..." class="pl-9 pr-4 py-2 text-xs rounded-xl border w-full focus:outline-none focus:ring-2 focus:ring-amber-500/30" style="background: var(--bg-surface-elevated); border-color: var(--border-color); color: var(--text-heading);">
+            </div>
         </div>
 
         <div class="overflow-x-auto">
             <table class="w-full text-left text-xs" id="clientsTable">
                 <thead>
-                    <tr class="text-gray-400 border-b border-gray-800 uppercase font-mono tracking-wider">
+                    <tr class="border-b uppercase font-mono tracking-wider text-[11px]" style="border-color: var(--border-color); color: var(--text-muted);">
                         <th class="py-3 px-4">Cliente</th>
-                        <th class="py-3 px-4">Plano Atual</th>
+                        <th class="py-3 px-4">Plano</th>
                         <th class="py-3 px-4">Saldo Atual</th>
                         <th class="py-3 px-4">Status</th>
-                        <th class="py-3 px-4">Atribuir Plano Pronto</th>
+                        <th class="py-3 px-4">Atribuir Plano</th>
                         <th class="py-3 px-4">Saldo Avulso</th>
                     </tr>
                 </thead>
-                <tbody class="divide-y divide-gray-800/60 font-mono">
+                <tbody class="divide-y font-mono" style="border-color: var(--border-color);">
                     <?php if (empty($myClients)): ?>
                         <tr>
-                            <td colspan="6" class="py-8 text-center text-gray-500 font-sans text-xs">
+                            <td colspan="6" class="py-10 text-center font-sans text-xs" style="color: var(--text-muted);">
+                                <i class="fa-solid fa-user-slash text-2xl mb-2 block opacity-40"></i>
                                 Nenhum cliente cadastrado ainda na sua revenda. Use o formulário acima para criar o primeiro!
                             </td>
                         </tr>
                     <?php else: ?>
                         <?php foreach ($myClients as $c): ?>
-                            <tr class="hover:bg-gray-900/40">
+                            <tr class="hover:bg-black/5 dark:hover:bg-white/5 transition">
                                 <td class="py-3.5 px-4 font-sans">
-                                    <div class="font-bold text-white"><?= htmlspecialchars($c['name']) ?></div>
-                                    <div class="text-[11px] text-emerald-400 font-mono"><i class="fa-brands fa-whatsapp mr-1"></i><?= htmlspecialchars($c['whatsapp']) ?></div>
+                                    <div class="font-bold" style="color: var(--text-heading);"><?= htmlspecialchars($c['name']) ?></div>
+                                    <div class="text-[11px] text-emerald-500 font-mono mt-0.5"><i class="fa-brands fa-whatsapp mr-1"></i><?= htmlspecialchars($c['whatsapp']) ?></div>
                                 </td>
                                 <td class="py-3.5 px-4 font-sans">
-                                    <span class="px-2.5 py-1 rounded-full bg-purple-500/20 text-purple-300 font-bold text-[10px]">
+                                    <span class="px-2.5 py-1 rounded-full font-bold text-[10px]" style="background: rgba(147, 51, 234, 0.15); color: #c084fc; border: 1px solid rgba(147, 51, 234, 0.3);">
                                         <?= htmlspecialchars($c['plan_type'] ?: 'Personalizado') ?>
                                     </span>
                                 </td>
-                                <td class="py-3.5 px-4 text-cyan-300 font-bold">
+                                <td class="py-3.5 px-4 font-bold text-cyan-400">
                                     <?= number_format($c['balance_tokens'], 0, ',', '.') ?>
                                 </td>
                                 <td class="py-3.5 px-4 font-sans">
                                     <form method="POST" action="index.php" class="inline">
+                                        <?= csrf_field() ?>
                                         <input type="hidden" name="action" value="toggle_client_status">
                                         <input type="hidden" name="client_id" value="<?= $c['id'] ?>">
                                         <input type="hidden" name="current_status" value="<?= $c['status'] ?>">
                                         <?php if ($c['status'] === 'active'): ?>
-                                            <button type="submit" title="Clique para bloquear acesso" class="px-2.5 py-1 rounded-full bg-emerald-500/20 text-emerald-400 font-semibold text-[11px] hover:bg-emerald-500/30 transition">
+                                            <button type="submit" title="Clique para bloquear acesso" class="px-2.5 py-1 rounded-full bg-emerald-500/15 text-emerald-500 border border-emerald-500/30 font-bold text-[11px] hover:bg-emerald-500/25 transition cursor-pointer">
                                                 ● Ativo
                                             </button>
                                         <?php else: ?>
-                                            <button type="submit" title="Clique para ativar acesso" class="px-2.5 py-1 rounded-full bg-red-500/20 text-red-400 font-semibold text-[11px] hover:bg-red-500/30 transition">
+                                            <button type="submit" title="Clique para ativar acesso" class="px-2.5 py-1 rounded-full bg-red-500/15 text-red-500 border border-red-500/30 font-bold text-[11px] hover:bg-red-500/25 transition cursor-pointer">
                                                 ● Suspenso
                                             </button>
                                         <?php endif; ?>
@@ -362,27 +372,29 @@ require_once __DIR__ . '/includes/header.php';
                                 </td>
                                 <td class="py-3.5 px-4 font-sans">
                                     <form method="POST" action="index.php" class="flex items-center space-x-1.5">
+                                        <?= csrf_field() ?>
                                         <input type="hidden" name="action" value="assign_plan">
                                         <input type="hidden" name="client_id" value="<?= $c['id'] ?>">
-                                        <select name="plan_id" required class="px-2 py-1.5 bg-gray-950 border border-gray-800 rounded-lg text-xs text-amber-300 focus:outline-none focus:border-amber-500 max-w-[170px]">
-                                            <option value="">-- Selecionar Plano --</option>
+                                        <select name="plan_id" required class="px-2 py-1.5 rounded-lg border text-xs focus:outline-none max-w-[170px]" style="background: var(--bg-surface-elevated); border-color: var(--border-color); color: var(--text-heading);">
+                                            <option value="">-- Selecionar --</option>
                                             <?php foreach ($activePlans as $pl): ?>
                                                 <option value="<?= $pl['id'] ?>">
                                                     <?= htmlspecialchars($pl['name']) ?> (<?= number_format($pl['tokens_amount'], 0, ',', '.') ?>)
                                                 </option>
                                             <?php endforeach; ?>
                                         </select>
-                                        <button type="submit" class="px-2.5 py-1.5 rounded-lg bg-gradient-to-r from-amber-500 to-yellow-400 text-gray-950 text-xs font-bold hover:scale-105 transition shrink-0">
-                                            Ativar Plano
+                                        <button type="submit" class="px-2.5 py-1.5 rounded-lg bg-gradient-to-r from-amber-500 to-yellow-400 text-gray-950 text-xs font-bold hover:scale-105 transition shrink-0 cursor-pointer">
+                                            Ativar
                                         </button>
                                     </form>
                                 </td>
                                 <td class="py-3.5 px-4 font-sans">
                                     <form method="POST" action="index.php" class="flex items-center space-x-1.5">
+                                        <?= csrf_field() ?>
                                         <input type="hidden" name="action" value="transfer_tokens">
                                         <input type="hidden" name="client_id" value="<?= $c['id'] ?>">
-                                        <input type="number" name="add_tokens" placeholder="+ Tokens" required class="w-24 px-2 py-1.5 bg-gray-950 border border-gray-800 rounded-lg text-xs text-white focus:outline-none focus:border-amber-500">
-                                        <button type="submit" class="px-2.5 py-1.5 rounded-lg bg-gray-800 hover:bg-gray-700 text-gray-300 text-xs font-bold transition shrink-0">
+                                        <input type="number" name="add_tokens" placeholder="+ Tokens" required class="w-24 px-2 py-1.5 rounded-lg border text-xs font-mono focus:outline-none" style="background: var(--bg-surface-elevated); border-color: var(--border-color); color: var(--text-heading);">
+                                        <button type="submit" class="px-2.5 py-1.5 rounded-lg glass-card font-bold text-xs transition shrink-0 cursor-pointer hover:border-amber-500" style="color: var(--text-heading);">
                                             + Saldo
                                         </button>
                                     </form>

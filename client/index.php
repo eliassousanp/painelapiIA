@@ -10,7 +10,9 @@ $error = '';
 
 // Criar nova API Key ou Revogar
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
-    if ($_POST['action'] === 'create_key') {
+    if (!validate_csrf()) {
+        $error = 'Sessão expirada ou token de segurança CSRF inválido. Recarregue a página.';
+    } elseif ($_POST['action'] === 'create_key') {
         $keyName = trim($_POST['key_name'] ?? 'Nova Key');
         $newKey = generateApiKey();
         $stmt = $db->prepare("INSERT INTO api_keys (user_id, api_key, key_name) VALUES (?, ?, ?)");
@@ -136,80 +138,118 @@ if (isset($_COOKIE['theme_scheme'])) {
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Área do Cliente - BRLove API</title>
+    <title>Área do Desenvolvedor - BRLove API</title>
+    
+    <!-- Google Fonts -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
+
+    <!-- Tailwind CSS CDN -->
     <script src="https://cdn.tailwindcss.com"></script>
     <script>
         tailwind.config = {
-            darkMode: 'class'
+            darkMode: 'class',
+            theme: {
+                extend: {
+                    fontFamily: {
+                        sans: ['"Plus Jakarta Sans"', 'sans-serif'],
+                        mono: ['"JetBrains Mono"', 'monospace']
+                    }
+                }
+            }
         }
     </script>
     <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" rel="stylesheet">
-    <style>
-        .glass {
-            background: rgba(17, 24, 39, 0.75);
-            backdrop-filter: blur(16px);
-            border: 1px solid rgba(255, 255, 255, 0.08);
-        }
-        .glass-card {
-            background: rgba(31, 41, 55, 0.5);
-            backdrop-filter: blur(12px);
-            border: 1px solid rgba(255, 255, 255, 0.05);
-        }
-        .code-block {
-            background: #0d1117;
-            border: 1px solid #21262d;
-        }
-    </style>
     <link href="<?= getAppBaseUrl() ?>/assets/css/theme.css?v=<?= time() ?>" rel="stylesheet">
     <script>window.BRLOVE_BASE_URL = '<?= getAppBaseUrl() ?>';</script>
     <script src="<?= getAppBaseUrl() ?>/assets/js/theme.js"></script>
 </head>
-<body class="bg-gray-950 text-gray-100 font-sans antialiased min-h-screen pb-16">
+<body class="font-sans antialiased min-h-screen pb-16 flex flex-col" style="background-color: var(--bg-base); color: var(--text-body);">
 
-    <!-- Top Navigation -->
-    <nav class="glass border-b border-gray-800 sticky top-0 z-50">
-        <div class="max-w-7xl mx-auto px-3 sm:px-6 lg:px-8 h-16 flex items-center justify-between">
+    <!-- Top Navigation Glass -->
+    <nav class="glass-header sticky top-0 z-50 border-b">
+        <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-16 flex items-center justify-between">
             <div class="flex items-center space-x-2 sm:space-x-3 min-w-0">
-                <a href="<?= getAppBaseUrl() ?>/index.php" class="flex items-center space-x-2 shrink-0">
-                    <div class="w-9 h-9 rounded-xl bg-gradient-to-tr from-indigo-600 via-purple-600 to-cyan-400 flex items-center justify-center font-bold text-lg text-white shadow-lg shadow-indigo-500/20">
+                <a href="<?= getAppBaseUrl() ?>/index.php" class="flex items-center space-x-2.5 shrink-0 group">
+                    <div class="w-9 h-9 rounded-xl bg-gradient-to-tr from-indigo-600 via-purple-600 to-cyan-400 flex items-center justify-center font-bold text-lg text-white shadow-lg shadow-indigo-500/20 group-hover:scale-105 transition-transform">
                         <i class="fa-solid fa-heart-pulse"></i>
                     </div>
-                    <span class="text-lg sm:text-xl font-bold text-white tracking-tight">BRLove<span class="text-indigo-400">API</span></span>
+                    <span class="text-lg sm:text-xl font-extrabold tracking-tight" style="color: var(--text-heading);">BRLove<span style="color: var(--accent-primary);">API</span></span>
                 </a>
-                <span class="text-xs px-2.5 py-1 rounded-full bg-indigo-500/20 text-indigo-300 font-semibold border border-indigo-500/30 hidden sm:inline-block shrink-0">
+                <span class="text-xs px-2.5 py-1 rounded-full font-bold border hidden sm:inline-block shrink-0" style="background: rgba(99, 102, 241, 0.12); color: var(--accent-primary); border-color: rgba(99, 102, 241, 0.25);">
                     Área do Cliente
                 </span>
             </div>
 
             <div class="flex items-center space-x-1.5 sm:space-x-3 shrink-0">
-                <span class="text-xs sm:text-sm text-emerald-400 font-mono hidden md:inline-flex items-center bg-emerald-500/10 px-3 py-1.5 rounded-lg border border-emerald-500/20">
-                    <i class="fa-brands fa-whatsapp mr-1.5 text-base"></i> <?php echo htmlspecialchars($user['whatsapp']); ?>
+                <span class="text-xs text-emerald-500 font-mono hidden md:inline-flex items-center px-3 py-1.5 rounded-xl border" style="background: rgba(16, 185, 129, 0.1); border-color: rgba(16, 185, 129, 0.25);">
+                    <i class="fa-brands fa-whatsapp mr-1.5 text-sm"></i> <?php echo htmlspecialchars($user['whatsapp']); ?>
                 </span>
                 
                 <!-- Botão de Alternar Tema (Claro / Escuro) -->
-                <button type="button" title="Alternar entre modo claro e escuro" class="btn-theme-toggle w-9 h-9 rounded-xl bg-gray-900 hover:bg-gray-800 border border-gray-800 flex items-center justify-center transition cursor-pointer shrink-0">
-                    <i class="theme-toggle-icon fa-solid <?= $isDark ? 'fa-moon text-indigo-400' : 'fa-sun text-amber-400' ?> text-sm pointer-events-none"></i>
+                <button type="button" title="Alternar entre modo claro e escuro" class="btn-theme-toggle w-9 h-9 rounded-xl glass-card flex items-center justify-center transition cursor-pointer shrink-0">
+                    <i class="theme-toggle-icon fa-solid <?= $isDark ? 'fa-moon text-indigo-400' : 'fa-sun text-amber-500' ?> text-sm pointer-events-none"></i>
                 </button>
 
+                <!-- Seletor de Paletas de Cores -->
+                <div class="relative shrink-0">
+                    <button type="button" class="btn-scheme-picker w-9 h-9 rounded-xl glass-card flex items-center justify-center transition cursor-pointer" title="Mudar paleta de cor">
+                        <i class="fa-solid fa-palette text-sm pointer-events-none" style="color: var(--accent-primary);"></i>
+                    </button>
+                    <div class="scheme-dropdown-menu hidden absolute right-0 mt-2 w-64 p-2.5 rounded-2xl glass-card shadow-2xl z-50 space-y-1.5 border">
+                        <div class="px-2.5 py-1 text-[10px] font-bold uppercase tracking-wider flex items-center justify-between" style="color: var(--text-muted);">
+                            <span>Paleta de Cores</span>
+                            <span class="w-2.5 h-2.5 rounded-full shadow-sm" style="background-color: var(--accent-primary);"></span>
+                        </div>
+                        <button data-set-scheme="purple_cyan" class="w-full text-left px-3 py-2 rounded-xl text-xs flex items-center gap-2.5 hover:bg-black/5 dark:hover:bg-white/5 font-semibold transition cursor-pointer" style="color: var(--text-heading);">
+                            <span class="w-3.5 h-3.5 rounded-full bg-indigo-500 shadow-sm shrink-0"></span> <span>Cyber Neon (Padrão)</span>
+                        </button>
+                        <button data-set-scheme="claude_terracotta" class="w-full text-left px-3 py-2 rounded-xl text-xs flex items-center gap-2.5 hover:bg-black/5 dark:hover:bg-white/5 font-semibold transition cursor-pointer" style="color: var(--text-heading);">
+                            <span class="w-3.5 h-3.5 rounded-full bg-[#d97736] shadow-sm shrink-0"></span> <span>Claude Terracotta</span>
+                        </button>
+                        <button data-set-scheme="emerald_teal" class="w-full text-left px-3 py-2 rounded-xl text-xs flex items-center gap-2.5 hover:bg-black/5 dark:hover:bg-white/5 font-semibold transition cursor-pointer" style="color: var(--text-heading);">
+                            <span class="w-3.5 h-3.5 rounded-full bg-emerald-500 shadow-sm shrink-0"></span> <span>Midnight Emerald</span>
+                        </button>
+                        <button data-set-scheme="blue_indigo" class="w-full text-left px-3 py-2 rounded-xl text-xs flex items-center gap-2.5 hover:bg-black/5 dark:hover:bg-white/5 font-semibold transition cursor-pointer" style="color: var(--text-heading);">
+                            <span class="w-3.5 h-3.5 rounded-full bg-blue-500 shadow-sm shrink-0"></span> <span>Ocean Sapphire</span>
+                        </button>
+                        <button data-set-scheme="amber_orange" class="w-full text-left px-3 py-2 rounded-xl text-xs flex items-center gap-2.5 hover:bg-black/5 dark:hover:bg-white/5 font-semibold transition cursor-pointer" style="color: var(--text-heading);">
+                            <span class="w-3.5 h-3.5 rounded-full bg-amber-500 shadow-sm shrink-0"></span> <span>Sunset Gold</span>
+                        </button>
+                        <button data-set-scheme="rose_crimson" class="w-full text-left px-3 py-2 rounded-xl text-xs flex items-center gap-2.5 hover:bg-black/5 dark:hover:bg-white/5 font-semibold transition cursor-pointer" style="color: var(--text-heading);">
+                            <span class="w-3.5 h-3.5 rounded-full bg-rose-500 shadow-sm shrink-0"></span> <span>Crimson Rose</span>
+                        </button>
+                        <button data-set-scheme="titanium_minimal" class="w-full text-left px-3 py-2 rounded-xl text-xs flex items-center gap-2.5 hover:bg-black/5 dark:hover:bg-white/5 font-semibold transition cursor-pointer" style="color: var(--text-heading);">
+                            <span class="w-3.5 h-3.5 rounded-full bg-slate-400 shadow-sm shrink-0"></span> <span>Titanium Minimal</span>
+                        </button>
+                    </div>
+                </div>
+
                 <?php if ($canAccessRealtime): ?>
-                <a href="<?= getAppBaseUrl() ?>/client/realtime.php" title="Realtime API" class="text-xs px-2.5 sm:px-3.5 py-2 rounded-xl bg-gradient-to-r from-indigo-600 to-purple-600 hover:from-indigo-500 hover:to-purple-500 text-white font-medium shadow-md shadow-indigo-500/20 transition flex items-center shrink-0">
-                    <i class="fa-solid fa-waveform-lines sm:mr-1.5 text-purple-300"></i> <span class="hidden sm:inline">Realtime</span>
+                <a href="<?= getAppBaseUrl() ?>/client/realtime.php" title="Realtime API" class="text-xs px-2.5 sm:px-3.5 py-2 rounded-xl bg-gradient-to-r from-indigo-600 to-purple-600 hover:from-indigo-500 hover:to-purple-500 text-white font-bold shadow-md shadow-indigo-500/20 transition flex items-center shrink-0">
+                    <i class="fa-solid fa-waveform-lines sm:mr-1.5 text-purple-200"></i> <span class="hidden sm:inline">Realtime</span>
                 </a>
                 <?php endif; ?>
+                <?php if (isReseller()): ?>
+                    <a href="<?= getAppBaseUrl() ?>/reseller/index.php" title="Painel Revenda" class="text-xs px-2.5 sm:px-3.5 py-2 rounded-xl bg-gradient-to-r from-amber-500 to-yellow-400 text-gray-950 font-bold shadow-md transition flex items-center shrink-0">
+                        <i class="fa-solid fa-briefcase sm:mr-1"></i> <span class="hidden sm:inline">Revenda</span>
+                    </a>
+                <?php endif; ?>
                 <?php if (isAdmin()): ?>
-                    <a href="<?= getAppBaseUrl() ?>/admin/index.php" title="Painel Admin" class="text-xs px-2.5 sm:px-3.5 py-2 rounded-xl bg-purple-600 hover:bg-purple-500 text-white font-medium shadow-md transition flex items-center shrink-0">
+                    <a href="<?= getAppBaseUrl() ?>/admin/index.php" title="Painel Admin" class="text-xs px-2.5 sm:px-3.5 py-2 rounded-xl bg-purple-600 hover:bg-purple-500 text-white font-bold shadow-md transition flex items-center shrink-0">
                         <i class="fa-solid fa-shield-halved sm:mr-1"></i> <span class="hidden sm:inline">Admin</span>
                     </a>
                 <?php endif; ?>
-                <a href="<?= getAppBaseUrl() ?>/logout.php" title="Sair do Painel" class="text-xs px-2.5 sm:px-3.5 py-2 rounded-xl glass hover:bg-gray-800 text-gray-300 transition flex items-center gap-1 shrink-0">
-                    <span class="hidden sm:inline">Sair</span> <i class="fa-solid fa-right-from-bracket"></i>
+                <a href="<?= getAppBaseUrl() ?>/logout.php" title="Sair do Painel" class="text-xs px-2.5 sm:px-3 py-2 rounded-xl glass-card transition flex items-center gap-1 shrink-0 hover:text-red-500" style="color: var(--text-heading);">
+                    <span class="hidden sm:inline font-semibold">Sair</span> <i class="fa-solid fa-right-from-bracket"></i>
                 </a>
             </div>
         </div>
     </nav>
 
     <!-- Main Container -->
-    <main class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8 space-y-8">
+    <main class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8 space-y-8 w-full min-w-0">
 
         <?php if ($msg): ?>
             <div class="p-4 rounded-2xl bg-emerald-500/10 border border-emerald-500/30 text-emerald-400 text-sm flex items-center justify-between">
@@ -231,104 +271,100 @@ if (isset($_COOKIE['theme_scheme'])) {
             </div>
         <?php endif; ?>
 
-        <!-- Summary Cards Grid (Design Futurist & Ultra Informative) -->
+        <!-- Summary Cards Grid (Design Futurista & Ultra Informativo) -->
         <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-5">
             <!-- Card 1: Saldo de Tokens -->
-            <div class="glass p-6 rounded-3xl border border-indigo-500/20 relative overflow-hidden group hover:-translate-y-1 hover:border-indigo-500/50 hover:shadow-2xl hover:shadow-indigo-500/10 transition-all duration-300">
-                <div class="absolute top-0 right-0 w-32 h-32 bg-indigo-500/10 rounded-full blur-2xl group-hover:bg-indigo-500/20 transition-all"></div>
+            <div class="glass-card p-6 rounded-3xl border relative overflow-hidden group hover:-translate-y-1 transition-all duration-300" style="border-color: rgba(99, 102, 241, 0.25);">
                 <div class="flex items-center justify-between mb-3">
-                    <span class="text-xs font-bold text-indigo-300 uppercase tracking-wider flex items-center">
-                        <i class="fa-solid fa-coins mr-1.5 text-indigo-400"></i> Saldo de Tokens
+                    <span class="text-xs font-bold uppercase tracking-wider flex items-center" style="color: var(--accent-primary);">
+                        <i class="fa-solid fa-coins mr-1.5"></i> Saldo de Tokens
                     </span>
-                    <div class="w-9 h-9 rounded-xl bg-gradient-to-tr from-indigo-600 to-indigo-400 text-white flex items-center justify-center shadow-lg shadow-indigo-500/30 text-sm font-bold">
+                    <div class="w-10 h-10 rounded-2xl bg-gradient-to-tr from-indigo-600 to-indigo-400 text-white flex items-center justify-center shadow-lg shadow-indigo-500/25 text-sm font-bold">
                         <i class="fa-solid fa-wallet"></i>
                     </div>
                 </div>
-                <div class="text-2xl sm:text-3xl font-extrabold text-white font-mono tracking-tight drop-shadow-sm">
+                <div class="text-2xl sm:text-3xl font-extrabold font-mono tracking-tight" style="color: var(--text-heading);">
                     <?php echo number_format($user['balance_tokens'], 0, ',', '.'); ?>
                 </div>
                 <div class="flex items-center justify-between mt-3 text-[11px]">
-                    <span class="text-emerald-400 font-semibold flex items-center">
-                        <i class="fa-solid fa-circle text-[7px] mr-1 text-emerald-400 animate-pulse"></i> Saldo Ativo
+                    <span class="text-emerald-500 font-bold flex items-center">
+                        <span class="pulse-indicator bg-emerald-500 mr-1.5"></span> Saldo Ativo
                     </span>
-                    <span class="text-gray-400 font-mono">Pronto p/ Uso</span>
+                    <span class="font-mono font-medium" style="color: var(--text-muted);">Pronto p/ Uso</span>
                 </div>
-                <div class="w-full bg-gray-900/80 h-2 rounded-full mt-2.5 overflow-hidden border border-gray-800 p-0.5">
-                    <div class="bg-gradient-to-r from-indigo-500 via-cyan-400 to-emerald-400 h-full rounded-full transition-all duration-500" style="width: <?php echo min(100, max(15, round(($user['balance_tokens'] / max(1, $user['balance_tokens'] + $user['tokens_used'])) * 100))); ?>%"></div>
+                <div class="w-full h-2 rounded-full mt-2.5 overflow-hidden border p-0.5" style="background: var(--bg-surface-elevated); border-color: var(--border-color);">
+                    <div class="h-full rounded-full transition-all duration-500" style="background: linear-gradient(90deg, var(--accent-primary) 0%, var(--accent-secondary) 100%); width: <?php echo min(100, max(15, round(($user['balance_tokens'] / max(1, $user['balance_tokens'] + $user['tokens_used'])) * 100))); ?>%"></div>
                 </div>
             </div>
 
             <!-- Card 2: Tokens Consumidos -->
-            <div class="glass p-6 rounded-3xl border border-cyan-500/20 relative overflow-hidden group hover:-translate-y-1 hover:border-cyan-500/50 hover:shadow-2xl hover:shadow-cyan-500/10 transition-all duration-300">
-                <div class="absolute top-0 right-0 w-32 h-32 bg-cyan-500/10 rounded-full blur-2xl group-hover:bg-cyan-500/20 transition-all"></div>
+            <div class="glass-card p-6 rounded-3xl border relative overflow-hidden group hover:-translate-y-1 transition-all duration-300" style="border-color: rgba(6, 182, 212, 0.25);">
                 <div class="flex items-center justify-between mb-3">
-                    <span class="text-xs font-bold text-cyan-300 uppercase tracking-wider flex items-center">
-                        <i class="fa-solid fa-chart-line mr-1.5 text-cyan-400"></i> Tokens Consumidos
+                    <span class="text-xs font-bold uppercase tracking-wider text-cyan-400 flex items-center">
+                        <i class="fa-solid fa-chart-line mr-1.5"></i> Tokens Consumidos
                     </span>
-                    <div class="w-9 h-9 rounded-xl bg-gradient-to-tr from-cyan-600 to-teal-400 text-white flex items-center justify-center shadow-lg shadow-cyan-500/30 text-sm font-bold">
+                    <div class="w-10 h-10 rounded-2xl bg-gradient-to-tr from-cyan-600 to-teal-400 text-white flex items-center justify-center shadow-lg shadow-cyan-500/25 text-sm font-bold">
                         <i class="fa-solid fa-bolt-lightning"></i>
                     </div>
                 </div>
-                <div class="text-2xl sm:text-3xl font-extrabold text-cyan-400 font-mono tracking-tight drop-shadow-sm">
+                <div class="text-2xl sm:text-3xl font-extrabold text-cyan-400 font-mono tracking-tight">
                     <?php echo number_format($user['tokens_used'], 0, ',', '.'); ?>
                 </div>
                 <div class="flex items-center justify-between mt-3 text-[11px]">
-                    <span class="text-gray-400">Total Utilizado</span>
-                    <span class="text-cyan-300 font-mono font-semibold bg-cyan-500/10 px-2 py-0.5 rounded border border-cyan-500/20">
+                    <span style="color: var(--text-muted);">Total Utilizado</span>
+                    <span class="text-cyan-400 font-mono font-bold px-2 py-0.5 rounded-lg border" style="background: rgba(6, 182, 212, 0.1); border-color: rgba(6, 182, 212, 0.25);">
                         <?php echo number_format($user['tokens_used'], 0, ',', '.'); ?> tokens
                     </span>
                 </div>
-                <p class="text-[10px] text-gray-500 mt-2 flex items-center">
-                    <i class="fa-solid fa-clock-rotate-left mr-1 text-cyan-400"></i> Atualizado a cada requisição
+                <p class="text-[10px] mt-2 flex items-center" style="color: var(--text-muted);">
+                    <i class="fa-solid fa-clock-rotate-left mr-1.5 text-cyan-400"></i> Atualizado a cada requisição
                 </p>
             </div>
 
             <!-- Card 3: Chaves Ativas -->
-            <div class="glass p-6 rounded-3xl border border-emerald-500/20 relative overflow-hidden group hover:-translate-y-1 hover:border-emerald-500/50 hover:shadow-2xl hover:shadow-emerald-500/10 transition-all duration-300">
-                <div class="absolute top-0 right-0 w-32 h-32 bg-emerald-500/10 rounded-full blur-2xl group-hover:bg-emerald-500/20 transition-all"></div>
+            <div class="glass-card p-6 rounded-3xl border relative overflow-hidden group hover:-translate-y-1 transition-all duration-300" style="border-color: rgba(16, 185, 129, 0.25);">
                 <div class="flex items-center justify-between mb-3">
-                    <span class="text-xs font-bold text-emerald-300 uppercase tracking-wider flex items-center">
-                        <i class="fa-solid fa-key mr-1.5 text-emerald-400"></i> Chaves de API
+                    <span class="text-xs font-bold uppercase tracking-wider text-emerald-500 flex items-center">
+                        <i class="fa-solid fa-key mr-1.5"></i> Chaves de API
                     </span>
-                    <div class="w-9 h-9 rounded-xl bg-gradient-to-tr from-emerald-600 to-emerald-400 text-white flex items-center justify-center shadow-lg shadow-emerald-500/30 text-sm font-bold">
+                    <div class="w-10 h-10 rounded-2xl bg-gradient-to-tr from-emerald-600 to-teal-500 text-white flex items-center justify-center shadow-lg shadow-emerald-500/25 text-sm font-bold">
                         <i class="fa-solid fa-shield-halved"></i>
                     </div>
                 </div>
                 <div class="flex items-baseline space-x-2">
-                    <span class="text-2xl sm:text-3xl font-extrabold text-emerald-400 font-mono tracking-tight">
+                    <span class="text-2xl sm:text-3xl font-extrabold text-emerald-500 font-mono tracking-tight">
                         <?php echo count($apiKeys); ?>
                     </span>
-                    <span class="text-xs font-semibold text-emerald-300">Ativa<?php echo count($apiKeys) > 1 ? 's' : ''; ?></span>
+                    <span class="text-xs font-bold text-emerald-400">Ativa<?php echo count($apiKeys) > 1 ? 's' : ''; ?></span>
                 </div>
                 <div class="flex items-center justify-between mt-3 text-[11px]">
-                    <span class="text-gray-400 font-mono truncate max-w-[120px]">
+                    <span class="font-mono truncate max-w-[120px]" style="color: var(--text-muted);">
                         <?php echo !empty($apiKeys) ? substr($apiKeys[0]['api_key'], 0, 10) . '...' : 'Nenhuma key'; ?>
                     </span>
-                    <a href="#chaves-section" class="text-emerald-400 hover:text-emerald-300 font-bold flex items-center hover:underline">
+                    <a href="#chaves-section" class="text-emerald-500 hover:text-emerald-400 font-bold flex items-center hover:underline">
                         Gerenciar <i class="fa-solid fa-arrow-down ml-1 text-[10px]"></i>
                     </a>
                 </div>
-                <p class="text-[10px] text-gray-500 mt-2 flex items-center">
-                    <i class="fa-solid fa-lock mr-1 text-emerald-400"></i> Criptografia SHA-256
+                <p class="text-[10px] mt-2 flex items-center" style="color: var(--text-muted);">
+                    <i class="fa-solid fa-lock mr-1.5 text-emerald-500"></i> Criptografia SHA-256
                 </p>
             </div>
 
             <!-- Card 4: Plano Atual & Recarga -->
-            <div class="glass p-6 rounded-3xl border border-purple-500/20 relative overflow-hidden group hover:-translate-y-1 hover:border-purple-500/50 hover:shadow-2xl hover:shadow-purple-500/10 transition-all duration-300">
-                <div class="absolute top-0 right-0 w-32 h-32 bg-purple-500/10 rounded-full blur-2xl group-hover:bg-purple-500/20 transition-all"></div>
+            <div class="glass-card p-6 rounded-3xl border relative overflow-hidden group hover:-translate-y-1 transition-all duration-300" style="border-color: rgba(147, 51, 234, 0.25);">
                 <div class="flex items-center justify-between mb-3">
-                    <span class="text-xs font-bold text-purple-300 uppercase tracking-wider flex items-center">
-                        <i class="fa-solid fa-crown mr-1.5 text-amber-400"></i> Plano Atual
+                    <span class="text-xs font-bold uppercase tracking-wider text-purple-400 flex items-center">
+                        <i class="fa-solid fa-crown mr-1.5 text-amber-500"></i> Plano Atual
                     </span>
-                    <div class="w-9 h-9 rounded-xl bg-gradient-to-tr from-purple-600 via-pink-500 to-amber-400 text-white flex items-center justify-center shadow-lg shadow-purple-500/30 text-sm font-bold">
+                    <div class="w-10 h-10 rounded-2xl bg-gradient-to-tr from-purple-600 via-pink-500 to-amber-500 text-white flex items-center justify-center shadow-lg shadow-purple-500/25 text-sm font-bold">
                         <i class="fa-solid fa-gem"></i>
                     </div>
                 </div>
-                <div class="text-xl font-bold text-white truncate drop-shadow-sm">
+                <div class="text-xl font-extrabold truncate" style="color: var(--text-heading);">
                     <?php echo htmlspecialchars($user['plan_type']); ?>
                 </div>
                 <div class="mt-3">
-                    <a href="#planos-section" class="w-full py-2.5 px-3 rounded-xl bg-gradient-to-r from-purple-600 via-indigo-600 to-cyan-500 hover:from-purple-500 hover:to-cyan-400 text-white font-bold text-xs shadow-lg shadow-purple-600/30 transition-all duration-300 flex items-center justify-center cursor-pointer group-hover:scale-[1.02]">
+                    <a href="#planos-section" class="w-full py-2.5 px-3 rounded-xl bg-gradient-to-r from-purple-600 via-indigo-600 to-cyan-500 hover:from-purple-500 hover:to-cyan-400 text-white font-bold text-xs shadow-lg shadow-purple-600/30 transition-all duration-300 flex items-center justify-center cursor-pointer hover:scale-[1.02]">
                         <i class="fa-solid fa-bolt mr-1.5 text-amber-300 animate-bounce"></i> Escolher Plano / Recarregar
                     </a>
                 </div>
@@ -337,39 +373,39 @@ if (isset($_COOKIE['theme_scheme'])) {
 
         <?php if ($canAccessRealtime): ?>
         <!-- Banner Destaque Realtime -->
-        <div class="glass p-6 rounded-3xl border border-indigo-500/30 bg-gradient-to-r from-indigo-950/50 via-purple-950/30 to-gray-900/80 relative overflow-hidden flex flex-col md:flex-row items-center justify-between gap-6 shadow-xl">
+        <div class="glass-card p-6 rounded-3xl border relative overflow-hidden flex flex-col md:flex-row items-center justify-between gap-6 shadow-xl" style="border-color: rgba(99, 102, 241, 0.35);">
             <div class="space-y-2">
-                <div class="inline-flex items-center space-x-2 px-3 py-1 rounded-full bg-indigo-500/20 text-indigo-300 text-xs font-bold border border-indigo-500/30">
-                    <span class="w-2 h-2 rounded-full bg-emerald-400 animate-ping"></span>
-                    <span>NOVO • WEBSOCKET REALTIME</span>
+                <div class="inline-flex items-center space-x-2 px-3 py-1 rounded-full text-xs font-bold border" style="background: rgba(99, 102, 241, 0.15); color: var(--accent-primary); border-color: rgba(99, 102, 241, 0.3);">
+                    <span class="pulse-indicator bg-emerald-500"></span>
+                    <span>NOVO • WEBSOCKET REALTIME VOICE</span>
                 </div>
-                <h3 class="text-lg sm:text-xl font-extrabold text-white flex items-center gap-2">
-                    <i class="fa-solid fa-waveform-lines text-indigo-400"></i> Console Realtime — IA com Voz & Streaming
+                <h3 class="text-lg sm:text-xl font-extrabold flex items-center gap-2" style="color: var(--text-heading);">
+                    <i class="fa-solid fa-waveform-lines text-indigo-400"></i> Console Realtime — IA com Voz Humana & Streaming
                 </h3>
-                <p class="text-xs text-gray-400 max-w-2xl leading-relaxed">
-                    Experimente a comunicação bidirecional em tempo real via WebSocket com voz neural realista (Francisca, Antônio, Thalita e inglês), streaming de tokens e push-to-talk.
+                <p class="text-xs max-w-2xl leading-relaxed" style="color: var(--text-muted);">
+                    Comunicação bidirecional contínua de baixa latência (<250ms) via WebAudio PCM streamer e Auto-VAD inteligente, compatível com as vozes neurais Francisca, Antônio, Thalita e inglês.
                 </p>
             </div>
-            <a href="<?= getAppBaseUrl() ?>/client/realtime.php" class="shrink-0 px-5 py-3 rounded-2xl bg-gradient-to-r from-indigo-600 via-purple-600 to-cyan-500 hover:from-indigo-500 hover:to-cyan-400 text-white font-bold text-xs sm:text-sm shadow-lg shadow-indigo-500/30 transition-all duration-300 flex items-center gap-2 hover:scale-105">
+            <a href="<?= getAppBaseUrl() ?>/client/realtime.php" class="shrink-0 px-5 py-3 rounded-2xl bg-gradient-to-r from-indigo-600 via-purple-600 to-cyan-500 hover:from-indigo-500 hover:to-cyan-400 text-white font-bold text-xs sm:text-sm shadow-lg shadow-indigo-500/25 transition-all duration-300 flex items-center gap-2 hover:scale-105">
                 <i class="fa-solid fa-headset text-sm"></i> Abrir Console Realtime
             </a>
         </div>
         <?php endif; ?>
 
         <!-- 🔥 SEÇÃO PRINCIPAL: GUIA DE ENDPOINTS & CONEXÃO DE MODELOS -->
-        <div class="glass p-6 sm:p-8 rounded-3xl border border-gray-800 space-y-6 shadow-2xl relative overflow-hidden">
-            <div class="absolute top-0 right-0 w-80 h-80 bg-indigo-600/10 rounded-full blur-3xl -z-10"></div>
+        <div class="glass-card p-6 sm:p-8 rounded-3xl border space-y-6 shadow-2xl relative overflow-hidden" style="border-color: var(--border-color);">
             
-            <div class="flex flex-col md:flex-row md:items-center justify-between gap-4 border-b border-gray-800 pb-6">
+            <div class="flex flex-col md:flex-row md:items-center justify-between gap-4 border-b pb-6" style="border-color: var(--border-color);">
                 <div>
-                    <h2 class="text-xl font-bold text-white flex items-center">
-                        <i class="fa-solid fa-network-wired text-cyan-400 mr-2.5"></i> Endpoints & Guia de Conexão da API
+                    <h2 class="text-xl font-bold flex items-center" style="color: var(--text-heading);">
+                        <i class="fa-solid fa-network-wired text-cyan-400 mr-2.5"></i> Endpoints & Guia de Integração Oficial
                     </h2>
-                    <p class="text-xs text-gray-400 mt-1">Conecte seus projetos, scripts ou extensoes do VS Code (Cline, Roo Code, Continue, OpenCode) aos nossos endpoints.</p>
+                    <p class="text-xs mt-1" style="color: var(--text-muted);">Compatível com Claude Code CLI, Cursor, Cline, Roo Code, Continue, LangChain e OpenAI/Anthropic SDKs.</p>
                 </div>
                 <div class="flex items-center space-x-2">
-                    <span class="px-3 py-1.5 rounded-xl bg-emerald-500/10 text-emerald-400 text-xs font-semibold border border-emerald-500/20">
-                        <i class="fa-solid fa-circle text-[8px] mr-1.5 text-emerald-400 animate-pulse"></i> OpenAI & Anthropic Compatible
+                    <span class="px-3 py-1.5 rounded-xl text-emerald-500 text-xs font-bold border flex items-center gap-1.5" style="background: rgba(16, 185, 129, 0.1); border-color: rgba(16, 185, 129, 0.25);">
+                        <span class="pulse-indicator bg-emerald-500"></span>
+                        <span>OpenAI & Anthropic Dual Compatible</span>
                     </span>
                 </div>
             </div>
@@ -377,39 +413,39 @@ if (isset($_COOKIE['theme_scheme'])) {
             <!-- Box de Base URLs Inteligente (Dual Format) -->
             <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
                 <!-- Base URL para Claude Code CLI & Anthropic SDK -->
-                <div class="bg-gray-900/90 p-5 rounded-2xl border border-purple-500/30 flex flex-col justify-between gap-3 shadow-inner relative overflow-hidden group hover:border-purple-500/50 transition">
+                <div class="p-5 rounded-2xl border flex flex-col justify-between gap-3 relative overflow-hidden group hover:border-purple-500/60 transition" style="background: var(--bg-surface-elevated); border-color: rgba(147, 51, 234, 0.3);">
                     <div class="space-y-1">
                         <div class="flex items-center justify-between">
                             <span class="text-[11px] font-bold text-purple-400 uppercase tracking-wider flex items-center">
                                 <i class="fa-solid fa-terminal mr-1.5"></i> Base URL (Claude Code CLI / Anthropic SDK)
                             </span>
-                            <span class="px-2 py-0.5 rounded bg-purple-500/20 text-purple-300 text-[10px] font-mono">x-api-key</span>
+                            <span class="px-2 py-0.5 rounded font-mono text-[10px] font-bold" style="background: rgba(147, 51, 234, 0.15); color: #c084fc;">x-api-key</span>
                         </div>
-                        <div class="text-sm sm:text-base font-mono text-white font-bold select-all flex items-center space-x-2 pt-1">
+                        <div class="text-sm sm:text-base font-mono font-bold select-all flex items-center space-x-2 pt-1" style="color: var(--text-heading);">
                             <i class="fa-solid fa-link text-purple-400 text-xs"></i>
                             <span class="truncate" id="baseUrlAnthropicText"><?php echo $anthropicBaseUrl; ?></span>
                         </div>
                     </div>
-                    <button onclick="copyToClipboard('<?php echo $anthropicBaseUrl; ?>', 'Base URL Anthropic copiada!')" class="w-full py-2.5 rounded-xl bg-purple-600/30 hover:bg-purple-600/50 text-purple-200 border border-purple-500/40 hover:border-purple-400 font-bold text-xs transition flex items-center justify-center cursor-pointer">
+                    <button onclick="copyToClipboard('<?php echo $anthropicBaseUrl; ?>', 'Base URL Anthropic copiada!')" class="w-full py-2.5 rounded-xl border font-bold text-xs transition flex items-center justify-center cursor-pointer hover:bg-purple-600 hover:text-white" style="background: rgba(147, 51, 234, 0.12); border-color: rgba(147, 51, 234, 0.35); color: #c084fc;">
                         <i class="fa-solid fa-copy mr-2"></i> Copiar Base URL Anthropic
                     </button>
                 </div>
 
                 <!-- Base URL para OpenAI SDK / VS Code (Cline, Roo Code, Continue, Cursor) -->
-                <div class="bg-gray-900/90 p-5 rounded-2xl border border-indigo-500/30 flex flex-col justify-between gap-3 shadow-inner relative overflow-hidden group hover:border-indigo-500/50 transition">
+                <div class="p-5 rounded-2xl border flex flex-col justify-between gap-3 relative overflow-hidden group hover:border-indigo-500/60 transition" style="background: var(--bg-surface-elevated); border-color: rgba(99, 102, 241, 0.3);">
                     <div class="space-y-1">
                         <div class="flex items-center justify-between">
-                            <span class="text-[11px] font-bold text-indigo-400 uppercase tracking-wider flex items-center">
-                                <i class="fa-solid fa-code mr-1.5"></i> Base URL (OpenAI Format / VS Code / Cursor)
+                            <span class="text-[11px] font-bold uppercase tracking-wider flex items-center" style="color: var(--accent-primary);">
+                                <i class="fa-solid fa-code mr-1.5"></i> Base URL (OpenAI / Cursor / VS Code)
                             </span>
-                            <span class="px-2 py-0.5 rounded bg-indigo-500/20 text-indigo-300 text-[10px] font-mono">Bearer Token</span>
+                            <span class="px-2 py-0.5 rounded font-mono text-[10px] font-bold" style="background: rgba(99, 102, 241, 0.15); color: var(--accent-primary);">Bearer Token</span>
                         </div>
-                        <div class="text-sm sm:text-base font-mono text-white font-bold select-all flex items-center space-x-2 pt-1">
-                            <i class="fa-solid fa-link text-indigo-400 text-xs"></i>
+                        <div class="text-sm sm:text-base font-mono font-bold select-all flex items-center space-x-2 pt-1" style="color: var(--text-heading);">
+                            <i class="fa-solid fa-link text-xs" style="color: var(--accent-primary);"></i>
                             <span class="truncate" id="baseUrlOpenaiText"><?php echo $openaiBaseUrl; ?></span>
                         </div>
                     </div>
-                    <button onclick="copyToClipboard('<?php echo $openaiBaseUrl; ?>', 'Base URL OpenAI copiada!')" class="w-full py-2.5 rounded-xl bg-indigo-600/30 hover:bg-indigo-600/50 text-indigo-200 border border-indigo-500/40 hover:border-indigo-400 font-bold text-xs transition flex items-center justify-center cursor-pointer">
+                    <button onclick="copyToClipboard('<?php echo $openaiBaseUrl; ?>', 'Base URL OpenAI copiada!')" class="w-full py-2.5 rounded-xl border font-bold text-xs transition flex items-center justify-center cursor-pointer hover:bg-indigo-600 hover:text-white" style="background: rgba(99, 102, 241, 0.12); border-color: rgba(99, 102, 241, 0.35); color: var(--accent-primary);">
                         <i class="fa-solid fa-copy mr-2"></i> Copiar Base URL OpenAI (/v1)
                     </button>
                 </div>
@@ -1173,19 +1209,20 @@ console.log('Texto transcrito:', data.text);</pre>
         </div>
 
         <!-- 🔑 MINHAS CHAVES DE API -->
-        <div id="chaves-section" class="glass p-6 sm:p-8 rounded-3xl border border-gray-800 space-y-6">
-            <div class="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 border-b border-gray-800 pb-4">
+        <div id="chaves-section" class="glass-card p-6 sm:p-8 rounded-3xl border space-y-6">
+            <div class="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 border-b pb-4" style="border-color: var(--border-color);">
                 <div>
-                    <h2 class="text-lg font-bold text-white flex items-center">
-                        <i class="fa-solid fa-key text-cyan-400 mr-2"></i> Minhas Chaves de API (sk-ai-...)
+                    <h2 class="text-lg font-bold flex items-center" style="color: var(--text-heading);">
+                        <i class="fa-solid fa-key text-cyan-400 mr-2.5"></i> Minhas Chaves de API (sk-ai-...)
                     </h2>
-                    <p class="text-xs text-gray-400">Gere chaves exclusivas para conectar seus projetos à API</p>
+                    <p class="text-xs mt-0.5" style="color: var(--text-muted);">Gere chaves exclusivas de alta performance para conectar suas ferramentas e scripts.</p>
                 </div>
 
                 <form method="POST" action="index.php" class="flex items-center space-x-2 w-full sm:w-auto">
+                    <?= csrf_field() ?>
                     <input type="hidden" name="action" value="create_key">
-                    <input type="text" name="key_name" placeholder="Nome da Key (ex: VSCode)" required class="px-3.5 py-2.5 text-xs rounded-xl bg-gray-900 border border-gray-800 text-white focus:outline-none focus:border-indigo-500 w-full sm:w-48">
-                    <button type="submit" class="px-4 py-2.5 text-xs rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white font-bold whitespace-nowrap shadow-lg shadow-indigo-600/30 transition">
+                    <input type="text" name="key_name" placeholder="Nome da Key (ex: VSCode)" required class="px-3.5 py-2.5 text-xs rounded-xl border w-full sm:w-48 focus:outline-none focus:ring-2 focus:ring-indigo-500/40" style="background: var(--bg-surface-elevated); border-color: var(--border-color); color: var(--text-heading);">
+                    <button type="submit" class="px-4 py-2.5 text-xs rounded-xl bg-gradient-to-r from-indigo-600 to-purple-600 hover:from-indigo-500 hover:to-purple-500 text-white font-bold whitespace-nowrap shadow-lg shadow-indigo-600/25 transition cursor-pointer hover:scale-105">
                         <i class="fa-solid fa-plus mr-1"></i> Nova Chave
                     </button>
                 </form>
@@ -1194,7 +1231,7 @@ console.log('Texto transcrito:', data.text);</pre>
             <div class="overflow-x-auto">
                 <table class="w-full text-left text-xs">
                     <thead>
-                        <tr class="text-gray-400 border-b border-gray-800 uppercase font-mono tracking-wider">
+                        <tr class="border-b uppercase font-mono tracking-wider text-[11px]" style="border-color: var(--border-color); color: var(--text-muted);">
                             <th class="py-3 px-4">Nome da Key</th>
                             <th class="py-3 px-4">Chave API</th>
                             <th class="py-3 px-4">Tokens Gastos</th>
@@ -1202,51 +1239,53 @@ console.log('Texto transcrito:', data.text);</pre>
                             <th class="py-3 px-4">Ações</th>
                         </tr>
                     </thead>
-                    <tbody class="divide-y divide-gray-800/60 font-mono">
+                    <tbody class="divide-y font-mono" style="border-color: var(--border-color);">
                         <?php if (empty($apiKeys)): ?>
                             <tr>
-                                <td colspan="5" class="py-8 text-center text-gray-500 font-sans text-xs">
+                                <td colspan="5" class="py-10 text-center font-sans text-xs" style="color: var(--text-muted);">
+                                    <i class="fa-solid fa-key text-2xl mb-2 block opacity-40"></i>
                                     Nenhuma chave de API gerada. Clique em "Nova Chave" acima para criar uma.
                                 </td>
                             </tr>
                         <?php else: ?>
                             <?php foreach ($apiKeys as $key): ?>
-                                <tr class="hover:bg-gray-900/40">
-                                    <td class="py-3.5 px-4 font-sans font-semibold text-white">
+                                <tr class="hover:bg-black/5 dark:hover:bg-white/5 transition">
+                                    <td class="py-3.5 px-4 font-sans font-bold" style="color: var(--text-heading);">
                                         <?php echo htmlspecialchars($key['key_name']); ?>
                                     </td>
                                     <td class="py-3.5 px-4 font-bold select-all">
                                         <div class="flex items-center space-x-2">
-                                            <span id="key-text-<?php echo $key['id']; ?>" class="text-cyan-300 tracking-wider">
+                                            <span id="key-text-<?php echo $key['id']; ?>" class="text-cyan-400 tracking-wider">
                                                 <?php echo substr($key['api_key'], 0, 10) . '••••••••••••••••'; ?>
                                             </span>
-                                            <button onclick="toggleKeyVisibility('<?php echo $key['id']; ?>', '<?php echo $key['api_key']; ?>')" class="text-gray-500 hover:text-white p-1" title="Mostrar/Ocultar">
+                                            <button onclick="toggleKeyVisibility('<?php echo $key['id']; ?>', '<?php echo $key['api_key']; ?>')" class="p-1 rounded-lg hover:text-indigo-400 transition cursor-pointer" style="color: var(--text-muted);" title="Mostrar/Ocultar">
                                                 <i class="fa-solid fa-eye text-xs" id="eye-icon-<?php echo $key['id']; ?>"></i>
                                             </button>
-                                            <button onclick="copyToClipboard('<?php echo $key['api_key']; ?>', 'Chave de API copiada!')" class="text-indigo-400 hover:text-indigo-300 p-1" title="Copiar Chave">
+                                            <button onclick="copyToClipboard('<?php echo $key['api_key']; ?>', 'Chave de API copiada!')" class="p-1 rounded-lg hover:text-indigo-400 transition cursor-pointer" style="color: var(--accent-primary);" title="Copiar Chave">
                                                 <i class="fa-solid fa-copy text-xs"></i>
                                             </button>
                                         </div>
                                     </td>
-                                    <td class="py-3.5 px-4 text-gray-300">
+                                    <td class="py-3.5 px-4" style="color: var(--text-body);">
                                         <?php echo number_format($key['tokens_used'], 0, ',', '.'); ?>
                                     </td>
                                     <td class="py-3.5 px-4">
                                         <?php if ($key['status'] === 'active'): ?>
-                                            <span class="px-2.5 py-1 rounded-full bg-emerald-500/20 text-emerald-400 font-sans font-semibold text-[11px]">Ativa</span>
+                                            <span class="px-2.5 py-1 rounded-full font-sans font-bold text-[11px]" style="background: rgba(16, 185, 129, 0.15); color: #10b981; border: 1px solid rgba(16, 185, 129, 0.3);">Ativa</span>
                                         <?php else: ?>
-                                            <span class="px-2.5 py-1 rounded-full bg-red-500/20 text-red-400 font-sans font-semibold text-[11px]">Revogada</span>
+                                            <span class="px-2.5 py-1 rounded-full font-sans font-bold text-[11px]" style="background: rgba(239, 68, 68, 0.15); color: #ef4444; border: 1px solid rgba(239, 68, 68, 0.3);">Revogada</span>
                                         <?php endif; ?>
                                     </td>
                                     <td class="py-3.5 px-4 font-sans">
                                         <?php if ($key['status'] === 'active'): ?>
                                             <form method="POST" action="index.php" onsubmit="return confirm('Tem certeza que deseja revogar esta chave?');" class="inline">
+                                                <?= csrf_field() ?>
                                                 <input type="hidden" name="action" value="revoke_key">
                                                 <input type="hidden" name="key_id" value="<?php echo $key['id']; ?>">
-                                                <button type="submit" class="text-xs text-red-400 hover:text-red-300 hover:underline">Revogar</button>
+                                                <button type="submit" class="text-xs text-red-500 hover:text-red-400 font-bold hover:underline cursor-pointer">Revogar</button>
                                             </form>
                                         <?php else: ?>
-                                            <span class="text-gray-600">-</span>
+                                            <span style="color: var(--text-muted);">-</span>
                                         <?php endif; ?>
                                     </td>
                                 </tr>
@@ -1258,12 +1297,12 @@ console.log('Texto transcrito:', data.text);</pre>
         </div>
 
         <!-- 💳 PLANOS & RECARGAS PIX (MISTIC PAY) -->
-        <div id="planos-section" class="glass p-6 sm:p-8 rounded-3xl border border-gray-800 space-y-6">
+        <div id="planos-section" class="glass-card p-6 sm:p-8 rounded-3xl border space-y-6">
             <div>
-                <h2 class="text-lg font-bold text-white flex items-center">
-                    <i class="fa-solid fa-bolt text-amber-400 mr-2"></i> Adicionar Tokens / Planos de Recarga
+                <h2 class="text-lg font-bold flex items-center" style="color: var(--text-heading);">
+                    <i class="fa-solid fa-bolt text-amber-500 mr-2.5"></i> Adicionar Tokens / Planos de Recarga
                 </h2>
-                <p class="text-xs text-gray-400 mt-1">Recarregue via PIX instantâneo e liberte seus tokens na hora</p>
+                <p class="text-xs mt-1" style="color: var(--text-muted);">Recarregue via PIX instantâneo com ativação em menos de 5 segundos via Mistic Pay.</p>
             </div>
 
             <div class="grid grid-cols-1 md:grid-cols-3 gap-6">
@@ -1271,24 +1310,25 @@ console.log('Texto transcrito:', data.text);</pre>
                     $isFeatured = !empty($plan['is_featured']);
                     $featuresList = array_filter(explode("\n", $plan['features'] ?? ''));
                 ?>
-                    <div class="glass-card p-6 rounded-2xl border <?= $isFeatured ? 'border-2 border-indigo-500/80 shadow-xl shadow-indigo-600/10 relative' : 'border-gray-800 hover:border-gray-700' ?> flex flex-col justify-between transition">
+                    <div class="glass-card p-6 rounded-3xl border <?= $isFeatured ? 'relative shadow-xl' : 'hover:border-indigo-500/40' ?> flex flex-col justify-between transition group hover:-translate-y-1 duration-300" style="<?= $isFeatured ? 'border-color: rgba(99, 102, 241, 0.6);' : '' ?>">
                         <?php if ($isFeatured): ?>
-                            <span class="absolute -top-3 left-1/2 -translate-x-1/2 px-3 py-0.5 rounded-full bg-gradient-to-r from-indigo-600 to-cyan-500 text-white text-[10px] font-bold uppercase tracking-wider">
+                            <span class="absolute -top-3 left-1/2 -translate-x-1/2 px-3 py-0.5 rounded-full bg-gradient-to-r from-indigo-600 to-cyan-500 text-white text-[10px] font-extrabold uppercase tracking-wider shadow-md">
                                 <?= htmlspecialchars($plan['badge'] ?: 'Recomendado') ?>
                             </span>
                         <?php endif; ?>
                         <div>
                             <span class="text-xs font-bold uppercase tracking-wider <?= $isFeatured ? 'text-indigo-400' : 'text-cyan-400' ?>"><?= htmlspecialchars($plan['name']) ?></span>
-                            <div class="text-3xl font-extrabold text-white mt-2">R$ <?= number_format($plan['price'], 0, ',', '.') ?></div>
-                            <p class="text-xs text-gray-400 mt-1 mb-4"><?= number_format($plan['tokens_amount'], 0, ',', '.') ?> Tokens</p>
-                            <ul class="text-xs text-gray-300 space-y-2 mb-6">
+                            <div class="text-3xl font-extrabold mt-2 font-mono" style="color: var(--text-heading);">R$ <?= number_format($plan['price'], 0, ',', '.') ?></div>
+                            <p class="text-xs mt-1 mb-5 font-mono font-semibold" style="color: var(--text-muted);"><?= number_format($plan['tokens_amount'], 0, ',', '.') ?> Tokens</p>
+                            <ul class="text-xs space-y-2.5 mb-6" style="color: var(--text-body);">
                                 <?php foreach ($featuresList as $feat): ?>
-                                    <li><i class="fa-solid fa-check <?= $isFeatured ? 'text-indigo-400' : 'text-cyan-400' ?> mr-2"></i> <?= htmlspecialchars(trim($feat)) ?></li>
+                                    <li class="flex items-center"><i class="fa-solid fa-check <?= $isFeatured ? 'text-indigo-400' : 'text-cyan-400' ?> mr-2.5 text-xs"></i> <?= htmlspecialchars(trim($feat)) ?></li>
                                 <?php endforeach; ?>
                             </ul>
                         </div>
-                        <button onclick="openPixModal(<?= $plan['price'] ?>, '<?= htmlspecialchars(addslashes($plan['name'])) ?>', <?= $plan['tokens_amount'] ?>)" class="w-full py-3 rounded-xl <?= $isFeatured ? 'bg-gradient-to-r from-indigo-600 to-cyan-500 hover:from-indigo-500 hover:to-cyan-400 text-white font-bold shadow-lg shadow-indigo-600/20' : 'glass hover:bg-gray-800 text-white font-semibold' ?> text-xs transition cursor-pointer">
-                            Comprar <?= htmlspecialchars($plan['name']) ?>
+                        <button onclick="openPixModal(<?= $plan['price'] ?>, '<?= htmlspecialchars(addslashes($plan['name'])) ?>', <?= $plan['tokens_amount'] ?>)" class="w-full py-3 rounded-xl <?= $isFeatured ? 'bg-gradient-to-r from-indigo-600 to-cyan-500 hover:from-indigo-500 hover:to-cyan-400 text-white font-bold shadow-lg shadow-indigo-600/25' : 'glass-card font-bold hover:border-indigo-500' ?> text-xs transition cursor-pointer flex items-center justify-center gap-2" style="<?= !$isFeatured ? 'color: var(--text-heading);' : '' ?>">
+                            <i class="fa-brands fa-pix text-sm"></i>
+                            <span>Comprar <?= htmlspecialchars($plan['name']) ?></span>
                         </button>
                     </div>
                 <?php endforeach; ?>
@@ -1299,23 +1339,23 @@ console.log('Texto transcrito:', data.text);</pre>
 
     <!-- Modal PIX (Mistic Pay) -->
     <div id="pixModal" class="fixed inset-0 bg-black/80 backdrop-blur-md flex items-center justify-center p-4 z-50 hidden">
-        <div class="glass max-w-md w-full p-6 sm:p-8 rounded-3xl border border-gray-800 space-y-6 relative text-center">
-            <button onclick="closePixModal()" class="absolute top-4 right-4 text-gray-400 hover:text-white">
-                <i class="fa-solid fa-xmark text-lg"></i>
+        <div class="glass-card max-w-md w-full p-6 sm:p-8 rounded-3xl border space-y-6 relative text-center shadow-2xl">
+            <button onclick="closePixModal()" class="absolute top-4 right-4 p-2 rounded-xl glass-card transition cursor-pointer" style="color: var(--text-muted);">
+                <i class="fa-solid fa-xmark text-sm"></i>
             </button>
 
-            <div class="w-12 h-12 rounded-2xl bg-emerald-500/20 text-emerald-400 flex items-center justify-center text-2xl mx-auto">
+            <div class="w-14 h-14 rounded-2xl bg-emerald-500/15 text-emerald-500 flex items-center justify-center text-2xl mx-auto border border-emerald-500/30">
                 <i class="fa-solid fa-qrcode"></i>
             </div>
 
             <div>
-                <h3 class="text-lg font-bold text-white">Pagamento via PIX</h3>
-                <p class="text-xs text-gray-400 mt-1" id="pixPlanDescription">Carregando dados da cobrança...</p>
+                <h3 class="text-lg font-bold" style="color: var(--text-heading);">Pagamento via PIX</h3>
+                <p class="text-xs mt-1" style="color: var(--text-muted);" id="pixPlanDescription">Carregando dados da cobrança...</p>
             </div>
 
             <div id="pixLoading" class="py-8">
                 <i class="fa-solid fa-circle-notch fa-spin text-3xl text-indigo-500"></i>
-                <p class="text-xs text-gray-400 mt-3">Gerando QR Code do PIX...</p>
+                <p class="text-xs mt-3" style="color: var(--text-muted);">Gerando QR Code do PIX...</p>
             </div>
 
             <div id="pixContainer" class="hidden space-y-4">

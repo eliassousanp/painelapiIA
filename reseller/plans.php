@@ -57,25 +57,32 @@ require_once __DIR__ . '/includes/header.php';
 
 <div class="space-y-6">
 
-    <div class="glass p-6 sm:p-8 rounded-3xl border border-amber-500/30 flex flex-col md:flex-row items-center justify-between gap-6 shadow-2xl relative overflow-hidden">
+    <!-- Top Banner Saldo -->
+    <div class="glass-card p-6 sm:p-8 rounded-3xl border flex flex-col md:flex-row items-center justify-between gap-6 relative overflow-hidden" style="border-color: rgba(245, 158, 11, 0.3);">
         <div class="space-y-2">
-            <span class="px-3 py-1 rounded-full bg-amber-500/20 text-amber-300 font-bold text-xs uppercase tracking-wider">
-                <i class="fa-solid fa-crown mr-1"></i> Saldo da Sua Revenda
+            <span class="px-3 py-1 rounded-full font-bold text-xs uppercase tracking-wider inline-flex items-center gap-1.5" style="background: rgba(245, 158, 11, 0.15); color: #f59e0b; border: 1px solid rgba(245, 158, 11, 0.3);">
+                <i class="fa-solid fa-crown text-amber-500"></i> Saldo Atual da Sua Revenda
             </span>
-            <h2 class="text-2xl sm:text-3xl font-extrabold text-white font-mono">
-                <?= number_format($reseller['balance_tokens'], 0, ',', '.') ?> <span class="text-amber-400 text-sm font-sans font-normal">Tokens Disponíveis</span>
+            <h2 class="text-2xl sm:text-3xl font-extrabold font-mono tracking-tight" style="color: var(--text-heading);">
+                <?= number_format($reseller['balance_tokens'], 0, ',', '.') ?> <span class="text-amber-500 text-sm font-sans font-semibold">Tokens em Caixa</span>
             </h2>
-            <p class="text-xs text-gray-400">Escolha um dos pacotes abaixo para adicionar créditos ao seu pool e continuar distribuindo aos seus clientes.</p>
+            <p class="text-xs" style="color: var(--text-muted);">Adicione créditos ao seu pool no atacado e distribua aos seus clientes com até 500% de margem de lucro.</p>
+        </div>
+        <div class="hidden md:flex items-center space-x-3 shrink-0">
+            <div class="p-4 rounded-2xl glass-card border text-center" style="border-color: var(--border-color);">
+                <div class="text-[10px] uppercase font-bold" style="color: var(--text-muted);">Liberação Automática</div>
+                <div class="text-xs font-bold text-emerald-500 mt-0.5"><i class="fa-solid fa-bolt mr-1"></i>PIX Instantâneo</div>
+            </div>
         </div>
     </div>
 
     <!-- Tabela de Pacotes de Revenda -->
-    <div class="glass p-6 sm:p-8 rounded-3xl border border-gray-800 space-y-6">
+    <div class="glass-card p-6 sm:p-8 rounded-3xl border space-y-6">
         <div>
-            <h3 class="text-base font-bold text-white flex items-center">
-                <i class="fa-solid fa-boxes-stacked text-amber-400 mr-2"></i> Pacotes de Recarga Exclusivos para Revenda
+            <h3 class="text-base font-bold flex items-center" style="color: var(--text-heading);">
+                <i class="fa-solid fa-boxes-stacked text-amber-500 mr-2.5"></i> Pacotes de Recarga Exclusivos para Revenda
             </h3>
-            <p class="text-xs text-gray-400 mt-1">Pagamento instantâneo via PIX com liberação automática de tokens</p>
+            <p class="text-xs mt-1" style="color: var(--text-muted);">Pagamento instantâneo via PIX com liberação imediata via Webhook Mistic Pay.</p>
         </div>
 
         <div class="grid grid-cols-1 md:grid-cols-3 gap-6">
@@ -83,24 +90,25 @@ require_once __DIR__ . '/includes/header.php';
                 $isFeatured = !empty($plan['is_featured']);
                 $featuresList = array_filter(explode("\n", $plan['features'] ?? ''));
             ?>
-                <div class="glass-card p-6 rounded-2xl border <?= $isFeatured ? 'border-2 border-amber-500/80 shadow-xl shadow-amber-500/10 relative' : 'border-gray-800 hover:border-gray-700' ?> flex flex-col justify-between transition">
+                <div class="glass-card p-6 rounded-3xl border <?= $isFeatured ? 'relative shadow-xl' : 'hover:border-amber-500/40' ?> flex flex-col justify-between transition group hover:-translate-y-1 duration-300" style="<?= $isFeatured ? 'border-color: rgba(245, 158, 11, 0.6);' : '' ?>">
                     <?php if ($isFeatured): ?>
-                        <span class="absolute -top-3 left-1/2 -translate-x-1/2 px-3 py-0.5 rounded-full bg-gradient-to-r from-amber-500 to-yellow-400 text-gray-950 text-[10px] font-extrabold uppercase tracking-wider">
-                            <?= htmlspecialchars($plan['badge'] ?: 'Melhor Valor') ?>
+                        <span class="absolute -top-3 left-1/2 -translate-x-1/2 px-3 py-0.5 rounded-full bg-gradient-to-r from-amber-500 to-yellow-400 text-gray-950 text-[10px] font-extrabold uppercase tracking-wider shadow-md">
+                            <?= htmlspecialchars($plan['badge'] ?: 'Melhor Custo-Benefício') ?>
                         </span>
                     <?php endif; ?>
                     <div>
-                        <span class="text-xs font-bold uppercase tracking-wider <?= $isFeatured ? 'text-amber-400' : 'text-cyan-400' ?>"><?= htmlspecialchars($plan['name']) ?></span>
-                        <div class="text-3xl font-extrabold text-white mt-2">R$ <?= number_format($plan['price'], 0, ',', '.') ?></div>
-                        <p class="text-xs text-gray-400 mt-1 mb-4"><?= number_format($plan['tokens_amount'], 0, ',', '.') ?> Tokens</p>
-                        <ul class="text-xs text-gray-300 space-y-2 mb-6">
+                        <span class="text-xs font-bold uppercase tracking-wider <?= $isFeatured ? 'text-amber-500' : 'text-cyan-400' ?>"><?= htmlspecialchars($plan['name']) ?></span>
+                        <div class="text-3xl font-extrabold mt-2 font-mono" style="color: var(--text-heading);">R$ <?= number_format($plan['price'], 0, ',', '.') ?></div>
+                        <p class="text-xs mt-1 mb-5 font-mono font-semibold" style="color: var(--text-muted);"><?= number_format($plan['tokens_amount'], 0, ',', '.') ?> Tokens</p>
+                        <ul class="text-xs space-y-2.5 mb-6" style="color: var(--text-body);">
                             <?php foreach ($featuresList as $feat): ?>
-                                <li><i class="fa-solid fa-check <?= $isFeatured ? 'text-amber-400' : 'text-cyan-400' ?> mr-2"></i> <?= htmlspecialchars(trim($feat)) ?></li>
+                                <li class="flex items-center"><i class="fa-solid fa-check <?= $isFeatured ? 'text-amber-500' : 'text-cyan-400' ?> mr-2.5 text-xs"></i> <?= htmlspecialchars(trim($feat)) ?></li>
                             <?php endforeach; ?>
                         </ul>
                     </div>
-                    <button onclick="openPixModal(<?= $plan['price'] ?>, '<?= htmlspecialchars(addslashes($plan['name'])) ?>', <?= $plan['tokens_amount'] ?>)" class="w-full py-3 rounded-xl <?= $isFeatured ? 'bg-gradient-to-r from-amber-500 to-yellow-400 hover:from-amber-400 hover:to-yellow-300 text-gray-950 font-extrabold shadow-lg shadow-amber-500/20' : 'glass hover:bg-gray-800 text-white font-semibold' ?> text-xs transition cursor-pointer">
-                        Recarregar <?= htmlspecialchars($plan['name']) ?>
+                    <button onclick="openPixModal(<?= $plan['price'] ?>, '<?= htmlspecialchars(addslashes($plan['name'])) ?>', <?= $plan['tokens_amount'] ?>)" class="w-full py-3 rounded-xl <?= $isFeatured ? 'bg-gradient-to-r from-amber-500 to-yellow-400 hover:from-amber-400 hover:to-yellow-300 text-gray-950 font-extrabold shadow-lg shadow-amber-500/20' : 'glass-card font-bold hover:border-amber-500' ?> text-xs transition cursor-pointer flex items-center justify-center gap-2" style="<?= !$isFeatured ? 'color: var(--text-heading);' : '' ?>">
+                        <i class="fa-brands fa-pix text-sm"></i>
+                        <span>Recarregar <?= htmlspecialchars($plan['name']) ?></span>
                     </button>
                 </div>
             <?php endforeach; ?>
@@ -111,23 +119,23 @@ require_once __DIR__ . '/includes/header.php';
 
 <!-- Modal PIX (Mistic Pay) para Revenda -->
 <div id="pixModal" class="fixed inset-0 bg-black/80 backdrop-blur-md flex items-center justify-center p-4 z-50 hidden">
-    <div class="glass max-w-md w-full p-6 sm:p-8 rounded-3xl border border-gray-800 space-y-6 relative text-center">
-        <button onclick="closePixModal()" class="absolute top-4 right-4 text-gray-400 hover:text-white">
-            <i class="fa-solid fa-xmark text-lg"></i>
+    <div class="glass-card max-w-md w-full p-6 sm:p-8 rounded-3xl border space-y-6 relative text-center shadow-2xl">
+        <button onclick="closePixModal()" class="absolute top-4 right-4 p-2 rounded-xl glass-card transition cursor-pointer" style="color: var(--text-muted);">
+            <i class="fa-solid fa-xmark text-sm"></i>
         </button>
 
-        <div class="w-12 h-12 rounded-2xl bg-amber-500/20 text-amber-400 flex items-center justify-center text-2xl mx-auto">
+        <div class="w-14 h-14 rounded-2xl bg-amber-500/15 text-amber-500 flex items-center justify-center text-2xl mx-auto border border-amber-500/30">
             <i class="fa-solid fa-qrcode"></i>
         </div>
 
         <div>
-            <h3 class="text-lg font-bold text-white">Recarga da Revenda via PIX</h3>
-            <p class="text-xs text-gray-400 mt-1" id="pixPlanDescription">Carregando dados da cobrança...</p>
+            <h3 class="text-lg font-bold" style="color: var(--text-heading);">Recarga de Revenda via PIX</h3>
+            <p class="text-xs mt-1" style="color: var(--text-muted);" id="pixPlanDescription">Carregando dados da cobrança...</p>
         </div>
 
         <div id="pixLoading" class="py-8">
             <i class="fa-solid fa-circle-notch fa-spin text-3xl text-amber-500"></i>
-            <p class="text-xs text-gray-400 mt-3">Gerando QR Code do PIX...</p>
+            <p class="text-xs mt-3" style="color: var(--text-muted);">Gerando QR Code do PIX...</p>
         </div>
 
         <div id="pixContainer" class="hidden space-y-4">
@@ -136,20 +144,22 @@ require_once __DIR__ . '/includes/header.php';
             </div>
 
             <div>
-                <label class="block text-[11px] font-semibold text-gray-400 uppercase mb-1">Chave Copia e Cola</label>
+                <label class="block text-[11px] font-bold uppercase mb-1.5" style="color: var(--text-muted);">Chave Copia e Cola</label>
                 <div class="flex items-center space-x-2">
-                    <input type="text" id="pixKeyInput" readonly class="w-full p-2.5 text-xs rounded-xl bg-gray-900 border border-gray-800 text-white font-mono select-all">
-                    <button onclick="copyPixKey()" class="px-4 py-2.5 bg-amber-500 hover:bg-amber-400 text-gray-950 text-xs font-bold rounded-xl whitespace-nowrap">
+                    <input type="text" id="pixKeyInput" readonly class="w-full p-2.5 text-xs rounded-xl border font-mono select-all focus:outline-none" style="background: var(--bg-surface-elevated); border-color: var(--border-color); color: var(--text-heading);">
+                    <button onclick="copyPixKey()" class="px-4 py-2.5 bg-gradient-to-r from-amber-500 to-yellow-400 hover:from-amber-400 hover:to-yellow-300 text-gray-950 text-xs font-bold rounded-xl whitespace-nowrap cursor-pointer transition">
                         Copiar
                     </button>
                 </div>
             </div>
 
-            <div class="text-[11px] text-amber-400 flex items-center justify-center space-x-2 bg-amber-500/10 p-2.5 rounded-xl border border-amber-500/20">
+            <div class="text-[11px] text-amber-500 flex items-center justify-center space-x-2 p-2.5 rounded-xl border" style="background: rgba(245, 158, 11, 0.1); border-color: rgba(245, 158, 11, 0.25);">
                 <i class="fa-solid fa-arrows-rotate fa-spin"></i>
-                <span>Aguardando confirmação do pagamento...</span>
+                <span class="font-semibold">Aguardando confirmação do pagamento...</span>
             </div>
         </div>
+    </div>
+</div>
     </div>
 </div>
 

@@ -8,77 +8,26 @@ $pageHeaderIcon = '<i class="fa-brands fa-google text-cyan-400 mr-2.5"></i>';
 $msg = '';
 $error = '';
 
-// Endpoint AJAX de Sincronização em Segundo Plano ou Sob Demanda
-if (isset($_GET['ajax_sync']) || (isset($_POST['action']) && $_POST['action'] === 'ajax_sync')) {
+// -------------------------------------------------------------
+// ENDPOINT AJAX UNIFICADO: VERIFICAÇÃO AUTOMÁTICA DE TODAS AS COTAS
+// Executa a checagem oficial de Gemini, Sonnet, Opus e GPT em um único fluxo
+// -------------------------------------------------------------
+if (isset($_GET['ajax_verify_quotas']) || isset($_GET['ajax_sync']) || isset($_GET['ajax_verify_opus']) || (isset($_POST['action']) && in_array($_POST['action'], ['ajax_verify_quotas', 'ajax_sync', 'ajax_verify_opus']))) {
     header('Content-Type: application/json; charset=utf-8');
     $accId = !empty($_REQUEST['account_id']) ? (int)$_REQUEST['account_id'] : 0;
-    $isBackground = !empty($_REQUEST['background']);
-    $gatewayInternal = getGatewayInternalUrl();
-    
-    $syncUrl = $accId > 0 
-        ? "{$gatewayInternal}/auth/antigravity/sync?id={$accId}" 
-        : "{$gatewayInternal}/auth/antigravity/sync" . ($isBackground ? '?background=1' : '');
-        
-    $ch = curl_init($syncUrl);
-    curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
-    curl_setopt($ch, CURLOPT_TIMEOUT, 40);
-    curl_setopt($ch, CURLOPT_CONNECTTIMEOUT, 5);
-    $syncRes = curl_exec($ch);
-    $syncCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
-    $curlErr = curl_error($ch);
-    curl_close($ch);
+    $syncEndpoint = $accId > 0 ? "auth/antigravity/sync?id={$accId}" : "auth/antigravity/sync";
 
-    $json = json_decode($syncRes, true);
-    if ($syncCode === 200 && !empty($json['success'])) {
+    $res = gateway_request($syncEndpoint, 'GET', null, 50);
+    if ($res['success']) {
         echo json_encode([
-            'success' => true, 
-            'message' => $accId > 0 ? 'Cota sincronizada com sucesso!' : 'Todas as contas foram sincronizadas com sucesso!',
-            'results' => $json['results'] ?? [],
-            'background' => !empty($json['background'])
+            'success' => true,
+            'message' => $accId > 0 ? 'Cotas da conta verificadas e atualizadas com sucesso!' : 'Todas as cotas do pool foram verificadas com sucesso!',
+            'results' => $res['data']['results'] ?? []
         ]);
     } else {
-        $detail = $json['error'] ?? ($curlErr ?: "Código HTTP {$syncCode}");
         echo json_encode([
-            'success' => false, 
-            'error' => "Erro ao sincronizar via Gateway Node: {$detail}"
-        ]);
-    }
-    exit;
-}
-
-// Endpoint AJAX de Verificação Real de Cota do Claude Opus
-if (isset($_GET['ajax_verify_opus']) || (isset($_POST['action']) && $_POST['action'] === 'ajax_verify_opus')) {
-    header('Content-Type: application/json; charset=utf-8');
-    $accId = !empty($_REQUEST['account_id']) ? (int)$_REQUEST['account_id'] : 0;
-    $gatewayInternal = getGatewayInternalUrl();
-    
-    $verifyUrl = $accId > 0 
-        ? "{$gatewayInternal}/auth/antigravity/verify-opus?id={$accId}" 
-        : "{$gatewayInternal}/auth/antigravity/verify-opus";
-        
-    $ch = curl_init($verifyUrl);
-    curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
-    curl_setopt($ch, CURLOPT_TIMEOUT, 60);
-    curl_setopt($ch, CURLOPT_CONNECTTIMEOUT, 5);
-    $verifyRes = curl_exec($ch);
-    $verifyCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
-    $curlErr = curl_error($ch);
-    curl_close($ch);
-
-    $json = json_decode($verifyRes, true);
-    if ($verifyCode === 200 && !empty($json['success'])) {
-        echo json_encode([
-            'success' => true, 
-            'message' => $accId > 0 ? 'Cota do Claude Opus testada na Google API com sucesso!' : 'Cota do Claude Opus testada em todas as contas!',
-            'results' => $json['results'] ?? [],
-            'opusAvailableCount' => $json['opusAvailableCount'] ?? 0,
-            'totalChecked' => $json['totalChecked'] ?? 0
-        ]);
-    } else {
-        $detail = $json['error'] ?? ($curlErr ?: "Código HTTP {$verifyCode}");
-        echo json_encode([
-            'success' => false, 
-            'error' => "Erro ao testar Opus via Gateway Node: {$detail}"
+            'success' => false,
+            'error' => "Erro ao verificar cotas no Gateway Node: " . ($res['error'] ?? 'Falha de comunicação')
         ]);
     }
     exit;
@@ -97,13 +46,15 @@ if (isset($_GET['msg'])) {
     if ($_GET['msg'] === 'connected') {
         $msg = 'Conta Google vinculada com sucesso ao ecossistema Antigravity!';
     } elseif ($_GET['msg'] === 'synced') {
-        $msg = 'Cotas da conta sincronizadas em tempo real com o Google Antigravity!';
+        $msg = 'Todas as cotas foram verificadas e atualizadas em tempo real!';
     }
 }
 
-// Processamento de Ações
+// Processamento de Ações POST
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
-    if ($_POST['action'] === 'toggle_account') {
+    if (!validate_csrf()) {
+        $error = 'Sessão expirada ou token CSRF inválido. Por favor, recarregue a página.';
+    } elseif ($_POST['action'] === 'toggle_account') {
         $accId = (int)$_POST['account_id'];
         $current = (int)$_POST['current_active'];
         $newVal = $current === 1 ? 0 : 1;
@@ -115,65 +66,23 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
         $stmt = $db->prepare("DELETE FROM antigravity_accounts WHERE id = ?");
         $stmt->execute([$accId]);
         $msg = 'Conta removida do pool.';
-    } elseif ($_POST['action'] === 'sync_quotas') {
+    } elseif (in_array($_POST['action'], ['verify_quotas', 'sync_quotas', 'verify_opus'])) {
         $accId = !empty($_POST['account_id']) ? (int)$_POST['account_id'] : 0;
-        $gatewayInternal = getGatewayInternalUrl();
-        
-        // Sincroniza diretamente através do serviço Antigravity ativo localmente
-        $syncUrl = $accId > 0 
-            ? "{$gatewayInternal}/auth/antigravity/sync?id=" . $accId 
-            : "{$gatewayInternal}/auth/antigravity/sync";
-        $ch = curl_init($syncUrl);
-        curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
-        curl_setopt($ch, CURLOPT_TIMEOUT, 40);
-        $syncRes = curl_exec($ch);
-        $syncCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
-        curl_close($ch);
-
-        $json = json_decode($syncRes, true);
-        if ($syncCode === 200 && !empty($json['success'])) {
-            $msg = 'Cotas sincronizadas com sucesso em tempo real com a Google API!';
+        $endpoint = $accId > 0 ? "auth/antigravity/sync?id={$accId}" : "auth/antigravity/sync";
+        $res = gateway_request($endpoint, 'GET', null, 50);
+        if ($res['success']) {
+            $msg = $accId > 0 ? 'Cotas da conta verificadas com sucesso na API Google!' : 'Todas as cotas do pool foram verificadas e atualizadas com sucesso!';
         } else {
-            $error = "Erro ao sincronizar. Verifique se o serviço Node.js está rodando em {$gatewayInternal}.";
-        }
-    } elseif ($_POST['action'] === 'verify_opus') {
-        $accId = !empty($_POST['account_id']) ? (int)$_POST['account_id'] : 0;
-        $gatewayInternal = getGatewayInternalUrl();
-        $verifyUrl = $accId > 0 
-            ? "{$gatewayInternal}/auth/antigravity/verify-opus?id={$accId}" 
-            : "{$gatewayInternal}/auth/antigravity/verify-opus";
-        $ch = curl_init($verifyUrl);
-        curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
-        curl_setopt($ch, CURLOPT_TIMEOUT, 60);
-        $res = curl_exec($ch);
-        $code = curl_getinfo($ch, CURLINFO_HTTP_CODE);
-        curl_close($ch);
-        $j = json_decode($res, true);
-        if ($code === 200 && !empty($j['success'])) {
-            $avail = $j['opusAvailableCount'] ?? 0;
-            $total = $j['totalChecked'] ?? 0;
-            $msg = "Teste real de cota concluído! {$avail} de {$total} conta(s) possuem cota ativa para Claude Opus 4.6.";
-        } else {
-            $error = "Erro ao testar cota do Opus: " . ($j['error'] ?? 'Verifique se o serviço Node.js está rodando.');
+            $error = "Erro ao verificar cotas: " . ($res['error'] ?? 'Verifique se o serviço Node.js está rodando.');
         }
     } elseif ($_POST['action'] === 'manual_vps_connect') {
         $codeUrl = trim($_POST['code_url'] ?? '');
-        $gatewayInternal = getGatewayInternalUrl();
         if (!empty($codeUrl)) {
-            $ch = curl_init("{$gatewayInternal}/auth/antigravity/manual-callback");
-            curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
-            curl_setopt($ch, CURLOPT_POST, true);
-            curl_setopt($ch, CURLOPT_POSTFIELDS, json_encode(['codeUrl' => $codeUrl]));
-            curl_setopt($ch, CURLOPT_HTTPHEADER, ['Content-Type: application/json']);
-            curl_setopt($ch, CURLOPT_TIMEOUT, 15);
-            $res = curl_exec($ch);
-            $cCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
-            curl_close($ch);
-            $j = json_decode($res, true);
-            if ($cCode === 200 && !empty($j['success'])) {
-                $msg = "Conta {$j['email']} vinculada com sucesso ao pool!";
+            $res = gateway_request("auth/antigravity/manual-callback", 'POST', ['codeUrl' => $codeUrl], 15);
+            if ($res['success']) {
+                $msg = "Conta " . ($res['data']['email'] ?? '') . " vinculada com sucesso ao pool!";
             } else {
-                $error = "Erro ao conectar conta: " . ($j['error'] ?? 'Verifique se a URL ou código foi copiado corretamente.');
+                $error = "Erro ao conectar conta: " . ($res['error'] ?? 'Verifique se a URL ou código foi copiado corretamente.');
             }
         } else {
             $error = 'Por favor, informe o código ou a URL de redirecionamento.';
@@ -500,15 +409,15 @@ require_once __DIR__ . '/includes/header.php';
 
     <!-- Banner & Estatísticas Topo -->
     <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-4">
-        <div class="glass-card p-5 rounded-3xl border border-gray-800">
-            <div class="text-[11px] font-bold text-gray-400 uppercase tracking-wider">Total de Contas</div>
-            <div class="text-2xl font-extrabold text-white mt-1"><?= $totalAccounts ?></div>
-            <div class="text-[11px] text-gray-500 mt-0.5">Pool de Contas Google</div>
+        <div class="glass-card p-5 rounded-3xl border border-[var(--border-color)]">
+            <div class="text-[11px] font-bold text-[var(--text-muted)] uppercase tracking-wider">Total de Contas</div>
+            <div class="text-2xl font-extrabold text-[var(--text-heading)] mt-1"><?= $totalAccounts ?></div>
+            <div class="text-[11px] text-[var(--text-muted)] opacity-80 mt-0.5">Pool de Contas Google</div>
         </div>
-        <div class="glass-card p-5 rounded-3xl border border-gray-800">
+        <div class="glass-card p-5 rounded-3xl border border-[var(--border-color)]">
             <div class="text-[11px] font-bold text-emerald-400 uppercase tracking-wider">Contas Ativas</div>
             <div class="text-2xl font-extrabold text-emerald-400 mt-1"><?= $activeAccounts ?></div>
-            <div class="text-[11px] text-gray-500 mt-0.5">Prontas para requisições</div>
+            <div class="text-[11px] text-[var(--text-muted)] opacity-80 mt-0.5">Prontas para requisições</div>
         </div>
         <?php if ($bannedAccounts > 0): ?>
             <div class="glass-card p-5 rounded-3xl border border-rose-500/30 bg-rose-950/20">
@@ -519,36 +428,36 @@ require_once __DIR__ . '/includes/header.php';
                 <div class="text-[11px] text-rose-300/70 mt-0.5">Bloqueadas pelo Google (403)</div>
             </div>
         <?php else: ?>
-            <div class="glass-card p-5 rounded-3xl border border-gray-800">
-                <div class="text-[11px] font-bold text-gray-400 uppercase tracking-wider">Requisições</div>
+            <div class="glass-card p-5 rounded-3xl border border-[var(--border-color)]">
+                <div class="text-[11px] font-bold text-[var(--text-muted)] uppercase tracking-wider">Requisições</div>
                 <div class="text-2xl font-extrabold text-purple-400 mt-1"><?= number_format($totalRequests, 0, ',', '.') ?></div>
-                <div class="text-[11px] text-gray-500 mt-0.5">Total de chamadas</div>
+                <div class="text-[11px] text-[var(--text-muted)] opacity-80 mt-0.5">Total de chamadas</div>
             </div>
         <?php endif; ?>
-        <div class="glass-card p-5 rounded-3xl border border-gray-800">
+        <div class="glass-card p-5 rounded-3xl border border-[var(--border-color)]">
             <div class="text-[11px] font-bold text-amber-400 uppercase tracking-wider flex items-center gap-1">
                 <i class="fa-solid fa-coins text-[10px]"></i> Tokens Consumidos
             </div>
             <div class="text-2xl font-extrabold text-amber-300 font-mono mt-1"><?= number_format($totalTokens, 0, ',', '.') ?></div>
-            <div class="text-[11px] text-gray-500 mt-0.5">Consumo total do pool</div>
+            <div class="text-[11px] text-[var(--text-muted)] opacity-80 mt-0.5">Consumo total do pool</div>
         </div>
-        <div class="glass-card p-5 rounded-3xl border border-gray-800 flex flex-col justify-center">
+        <div class="glass-card p-5 rounded-3xl border border-[var(--border-color)] flex flex-col justify-center">
             <a href="<?= htmlspecialchars($gatewayExternalUrl) ?>/auth/antigravity/login?redirect=<?= urlencode($currentAppUrl . '?msg=connected') ?>" target="_blank" class="w-full py-3 px-4 rounded-2xl bg-gradient-to-r from-amber-600 to-orange-600 hover:from-amber-500 hover:to-orange-500 text-white font-bold text-xs flex items-center justify-center space-x-2 shadow-lg shadow-amber-600/25 transition">
                 <i class="fa-brands fa-google text-sm"></i>
                 <span>+ Conectar Conta Google</span>
             </a>
-            <div class="flex items-center justify-between text-[10px] text-gray-400 mt-1.5 px-0.5">
+            <div class="flex items-center justify-between text-[10px] text-[var(--text-muted)] mt-1.5 px-0.5">
                 <span>OAuth Antigravity</span>
                 <button type="button" onclick="document.getElementById('vpsModal').classList.remove('hidden')" class="text-amber-400 hover:text-amber-300 underline font-semibold">
                     <i class="fa-solid fa-server mr-0.5"></i> Usando VPS?
                 </button>
             </div>
-            <div class="flex items-center justify-between gap-1.5 pt-2 border-t border-gray-800/80 mt-2 text-[10px]">
-                <a href="?action=export_accounts" class="flex-1 py-1.5 px-2 rounded-xl bg-gray-800/80 hover:bg-gray-700 text-cyan-400 font-bold flex items-center justify-center space-x-1 border border-gray-700/60 transition" title="Exportar Contas Conectadas em JSON">
+            <div class="flex items-center justify-between gap-1.5 pt-2 border-t border-[var(--border-color)] mt-2 text-[10px]">
+                <a href="?action=export_accounts" class="flex-1 py-1.5 px-2 rounded-xl bg-[var(--bg-surface)] hover:bg-[var(--border-color)] text-cyan-400 font-bold flex items-center justify-center space-x-1 border border-[var(--border-color)] transition" title="Exportar Contas Conectadas em JSON">
                     <i class="fa-solid fa-file-export text-[11px]"></i>
                     <span>Exportar</span>
                 </a>
-                <button type="button" onclick="document.getElementById('importModal').classList.remove('hidden')" class="flex-1 py-1.5 px-2 rounded-xl bg-gray-800/80 hover:bg-gray-700 text-emerald-400 font-bold flex items-center justify-center space-x-1 border border-gray-700/60 transition" title="Importar Contas Conectadas">
+                <button type="button" onclick="document.getElementById('importModal').classList.remove('hidden')" class="flex-1 py-1.5 px-2 rounded-xl bg-[var(--bg-surface)] hover:bg-[var(--border-color)] text-emerald-400 font-bold flex items-center justify-center space-x-1 border border-[var(--border-color)] transition" title="Importar Contas Conectadas">
                     <i class="fa-solid fa-file-import text-[11px]"></i>
                     <span>Importar</span>
                 </button>
@@ -557,81 +466,78 @@ require_once __DIR__ . '/includes/header.php';
     </div>
 
     <!-- BANNER DE DESTAQUE: STATUS REAL DE COTA E TOKENS DO CLAUDE OPUS 4.6 -->
-    <div class="glass-card rounded-3xl border border-pink-500/30 bg-gradient-to-r from-purple-950/50 via-pink-950/30 to-gray-950/80 p-5 shadow-2xl flex flex-col lg:flex-row items-center justify-between gap-5">
+    <div class="glass-card rounded-3xl border border-pink-500/30 p-5 shadow-2xl flex flex-col lg:flex-row items-center justify-between gap-5" style="background: radial-gradient(circle at top left, rgba(236,72,153,0.12), transparent 70%), var(--bg-surface-elevated);">
         <div class="flex items-start space-x-4">
             <div class="w-12 h-12 rounded-2xl bg-gradient-to-tr from-pink-600 to-purple-600 text-white flex items-center justify-center text-xl shadow-lg shadow-pink-500/25 shrink-0 mt-0.5">
                 <i class="fa-solid fa-gem"></i>
             </div>
             <div class="space-y-2">
                 <div class="flex flex-wrap items-center gap-2">
-                    <h3 class="text-base font-extrabold text-white flex items-center gap-2">
+                    <h3 class="text-base font-extrabold text-[var(--text-heading)] flex items-center gap-2">
                         <span>Claude Opus 4.6 (Thinking)</span>
-                        <span class="text-xs px-2 py-0.5 rounded bg-pink-500/20 text-pink-300 border border-pink-500/30 font-mono font-bold">Probe Real Ativo</span>
+                        <span class="text-xs px-2.5 py-0.5 rounded-full bg-pink-500/15 text-pink-400 border border-pink-500/30 font-mono font-bold">Probe Real Ativo</span>
                     </h3>
                     <?php if ($opusActiveCount > 0): ?>
-                        <span class="px-2.5 py-0.5 rounded-full bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 text-[10px] font-bold">
+                        <span class="px-2.5 py-0.5 rounded-full bg-emerald-500/15 text-emerald-400 border border-emerald-500/30 text-[10px] font-bold">
                             <i class="fa-solid fa-circle-check mr-1"></i><?= $opusActiveCount ?> de <?= $activeAccounts ?> CONTAS COM COTA ATIVA
                         </span>
                     <?php else: ?>
-                        <span class="px-2.5 py-0.5 rounded-full bg-rose-500/20 text-rose-300 border border-rose-500/30 text-[10px] font-bold">
-                            <i class="fa-solid fa-triangle-exclamation mr-1"></i>0 CONTAS COM COTA (<?= $opusNoQuotaCount ?> sem cota<?= $opusUnverifiedCount > 0 ? ", {$opusUnverifiedCount} não testadas" : "" ?>)
+                        <span class="px-2.5 py-0.5 rounded-full bg-rose-500/15 text-rose-400 border border-rose-500/30 text-[10px] font-bold">
+                            <i class="fa-solid fa-triangle-exclamation mr-1"></i>0 CONTAS COM COTA (<?= $opusNoQuotaCount ?> sem cota<?= $opusUnverifiedCount > 0 ? ", {$opusUnverifiedCount} pendentes" : "" ?>)
                         </span>
                     <?php endif; ?>
                 </div>
 
                 <!-- Métricas Claras de Tokens de Opus no Pool -->
                 <div class="flex flex-wrap items-center gap-2 pt-0.5 font-mono text-xs">
-                    <span class="px-3 py-1.5 rounded-xl bg-pink-950/60 border border-pink-500/40 text-pink-200 font-bold flex items-center gap-2 shadow-sm">
+                    <span class="px-3 py-1.5 rounded-xl border border-pink-500/30 text-pink-300 font-bold flex items-center gap-2 shadow-sm" style="background: rgba(236,72,153,0.08);">
                         <i class="fa-solid fa-battery-half text-emerald-400 text-sm"></i>
                         <span>Cota Opus no Pool:</span>
-                        <strong class="text-white text-sm"><?= number_format($opusPoolAvailableTokens, 0, ',', '.') ?></strong>
-                        <span class="text-pink-400 font-normal">/ <?= number_format($opusPoolMaxTokens, 0, ',', '.') ?> tokens livres (<?= $opusPoolPercentage ?>%)</span>
+                        <strong class="text-[var(--text-heading)] text-sm"><?= number_format($opusPoolAvailableTokens, 0, ',', '.') ?></strong>
+                        <span class="text-pink-400/90 font-normal">/ <?= number_format($opusPoolMaxTokens, 0, ',', '.') ?> tokens livres (<?= $opusPoolPercentage ?>%)</span>
                     </span>
-                    <span class="px-2.5 py-1.5 rounded-xl bg-gray-900/80 border border-gray-800 text-emerald-300 flex items-center gap-1.5 text-[11px] font-semibold">
+                    <span class="px-2.5 py-1.5 rounded-xl border border-[var(--border-color)] text-emerald-400 flex items-center gap-1.5 text-[11px] font-semibold" style="background: var(--bg-surface);">
                         <i class="fa-solid fa-circle-check text-emerald-400"></i> <?= $opusActiveCount ?> com cota
                     </span>
-                    <span class="px-2.5 py-1.5 rounded-xl bg-gray-900/80 border border-gray-800 text-rose-300 flex items-center gap-1.5 text-[11px] font-semibold">
+                    <span class="px-2.5 py-1.5 rounded-xl border border-[var(--border-color)] text-rose-400 flex items-center gap-1.5 text-[11px] font-semibold" style="background: var(--bg-surface);">
                         <i class="fa-solid fa-circle-xmark text-rose-400"></i> <?= $opusNoQuotaCount ?> sem cota
                     </span>
                     <?php if ($opusUnverifiedCount > 0): ?>
-                        <span class="px-2.5 py-1.5 rounded-xl bg-amber-500/10 border border-amber-500/20 text-amber-300 flex items-center gap-1.5 text-[11px] font-semibold">
+                        <span class="px-2.5 py-1.5 rounded-xl bg-amber-500/10 border border-amber-500/20 text-amber-400 flex items-center gap-1.5 text-[11px] font-semibold">
                             <i class="fa-solid fa-circle-question text-amber-400"></i> <?= $opusUnverifiedCount ?> não testadas
                         </span>
                     <?php endif; ?>
                 </div>
 
-                <p class="text-xs text-gray-400 leading-relaxed">
-                    O catálogo padrão do Google Cloud Code lista 100% de cota para todas as contas indistintamente. Nosso sistema executa verificação real diretamente na Google API para certificar quais contas têm tokens reais liberados.
+                <p class="text-xs text-[var(--text-muted)] leading-relaxed">
+                    O catálogo da Google API lista cota teórica para todas as contas. Nossa verificação unificada faz probe real via Cloud Code para assegurar que seus tokens de Opus estão prontos para produção.
                 </p>
             </div>
         </div>
         <div class="flex items-center space-x-2 self-stretch lg:self-auto justify-end shrink-0">
-            <form method="POST" action="" onsubmit="return handleVerifyOpusAll(event);">
-                <input type="hidden" name="action" value="verify_opus">
-                <button type="submit" id="btnVerifyOpusAll" class="w-full lg:w-auto px-5 py-3 rounded-2xl bg-gradient-to-r from-pink-600 via-purple-600 to-indigo-600 hover:from-pink-500 hover:to-indigo-500 text-white text-xs font-bold shadow-lg shadow-pink-600/30 transition flex items-center justify-center space-x-2.5 cursor-pointer disabled:opacity-60 disabled:cursor-not-allowed">
-                    <i class="fa-solid fa-flask-vial text-sm" id="verifyOpusIcon"></i>
-                    <span id="verifyOpusText">Testar Cota Opus de Todas as Contas</span>
-                </button>
-            </form>
+            <button type="button" onclick="verifyAllQuotas();" class="btn-verify-all-main w-full lg:w-auto px-5 py-3 rounded-2xl bg-gradient-to-r from-pink-600 via-purple-600 to-indigo-600 hover:from-pink-500 hover:to-indigo-500 text-white text-xs font-bold shadow-lg shadow-pink-600/30 transition flex items-center justify-center space-x-2.5 cursor-pointer disabled:opacity-60 disabled:cursor-not-allowed">
+                <i class="fa-solid fa-bolt text-sm"></i>
+                <span>Verificar Todas as Cotas</span>
+            </button>
         </div>
     </div>
 
     <!-- PAINEL CONSOLIDADO: CAPACIDADE TOTAL DO POOL (SOMA DE TODAS AS CONTAS) -->
     <?php if (!empty($poolModelStats)): ?>
-        <div id="poolConsolidatedCard" data-seconds-since-sync="<?= $secondsSinceLastSync ?>" data-active-accounts="<?= $activeAccounts ?>" class="glass-card rounded-3xl border border-gray-800 overflow-hidden shadow-2xl p-6 space-y-5 bg-gradient-to-b from-gray-900/90 to-gray-950/90">
-            <div class="flex flex-col md:flex-row md:items-center justify-between gap-3 border-b border-gray-800/80 pb-4">
+        <div id="poolConsolidatedCard" data-seconds-since-sync="<?= $secondsSinceLastSync ?>" data-active-accounts="<?= $activeAccounts ?>" class="glass-card rounded-3xl border border-[var(--border-color)] overflow-hidden shadow-2xl p-6 space-y-5" style="background: var(--bg-surface-elevated);">
+            <div class="flex flex-col md:flex-row md:items-center justify-between gap-3 border-b border-[var(--border-color)] pb-4">
                 <div class="flex items-center space-x-3">
                     <div class="w-10 h-10 rounded-2xl bg-gradient-to-tr from-cyan-500 to-blue-600 text-white flex items-center justify-center text-lg shadow-lg shadow-cyan-500/20">
                         <i class="fa-solid fa-server"></i>
                     </div>
                     <div>
                         <div class="flex items-center space-x-2.5">
-                            <h2 class="text-base font-extrabold text-white tracking-wide">Capacidade Total Consolidada do Pool</h2>
+                            <h2 class="text-base font-extrabold text-[var(--text-heading)] tracking-wide">Capacidade Total Consolidada do Pool</h2>
                             <span class="px-2.5 py-0.5 rounded-full bg-cyan-500/10 border border-cyan-500/20 text-cyan-400 text-[10px] font-bold">
                                 <?= $activeAccounts ?> CONTAS ATIVAS
                             </span>
                         </div>
-                        <p class="text-xs text-gray-400 mt-0.5">Soma em tempo real dos tokens disponíveis e consumidos de todas as contas combinadas</p>
+                        <p class="text-xs text-[var(--text-muted)] mt-0.5">Soma em tempo real dos tokens disponíveis e consumidos de todas as contas combinadas</p>
                     </div>
                 </div>
 
@@ -639,14 +545,10 @@ require_once __DIR__ . '/includes/header.php';
                     <!-- Badge de Status em Segundo Plano -->
                     <div id="bgSyncBadge" class="hidden items-center space-x-1.5 px-3 py-1.5 rounded-xl text-xs font-semibold backdrop-blur-md transition-all duration-300"></div>
 
-                    <form method="POST" action="" onsubmit="return handleSyncAll(event);">
-                        <input type="hidden" name="action" value="sync_quotas">
-                        <input type="hidden" name="account_id" value="">
-                        <button type="submit" id="btnSyncAll" class="px-3.5 py-2 rounded-xl bg-cyan-600/20 hover:bg-cyan-600/30 text-cyan-300 text-xs font-bold border border-cyan-500/30 transition flex items-center space-x-1.5 shadow-lg shadow-cyan-500/10 cursor-pointer disabled:opacity-60 disabled:cursor-not-allowed">
-                            <i class="fa-solid fa-arrows-rotate text-[11px]" id="syncAllIcon"></i>
-                            <span id="syncAllText">Sincronizar Todas as Cotas</span>
-                        </button>
-                    </form>
+                    <button type="button" id="btnSyncAll" onclick="verifyAllQuotas();" class="px-4 py-2.5 rounded-xl bg-cyan-600/20 hover:bg-cyan-600/30 text-cyan-300 text-xs font-bold border border-cyan-500/30 transition flex items-center space-x-2 shadow-lg shadow-cyan-500/10 cursor-pointer disabled:opacity-60 disabled:cursor-not-allowed">
+                        <i class="fa-solid fa-arrows-rotate text-[11px]" id="syncAllIcon"></i>
+                        <span id="syncAllText">Sincronizar Todas as Cotas</span>
+                    </button>
                 </div>
             </div>
 
@@ -681,11 +583,11 @@ require_once __DIR__ . '/includes/header.php';
                         }
                     }
                 ?>
-                    <div class="p-4 rounded-2xl bg-gray-900/90 border border-gray-800 hover:border-cyan-500/40 transition space-y-3 shadow-lg">
+                    <div class="p-4 rounded-2xl border border-[var(--border-color)] hover:border-cyan-500/40 transition space-y-3 shadow-lg" style="background: var(--bg-surface);">
                         <div class="flex items-start justify-between">
                             <div>
-                                <div class="text-xs font-bold text-white leading-tight"><?= htmlspecialchars($pStat['displayName']) ?></div>
-                                <div class="text-[10px] text-gray-400 font-mono mt-0.5 flex items-center gap-1.5">
+                                <div class="text-xs font-bold text-[var(--text-heading)] leading-tight"><?= htmlspecialchars($pStat['displayName']) ?></div>
+                                <div class="text-[10px] text-[var(--text-muted)] font-mono mt-0.5 flex items-center gap-1.5">
                                     <span><?= htmlspecialchars($pKey) ?></span>
                                     <span>•</span>
                                     <span class="text-cyan-400 font-bold"><?= $pStat['activeAccountsCount'] ?> contas</span>
@@ -693,43 +595,43 @@ require_once __DIR__ . '/includes/header.php';
                             </div>
                             <div class="text-right">
                                 <span class="text-sm font-black font-mono <?= $poolTextCol ?>"><?= $poolPct ?>%</span>
-                                <div class="text-[9px] text-gray-500 uppercase font-semibold">Pool Disponível</div>
+                                <div class="text-[9px] text-[var(--text-muted)] uppercase font-semibold">Pool Disponível</div>
                             </div>
                         </div>
 
                         <!-- Métricas Consolidadas do Pool -->
                         <div class="grid grid-cols-2 gap-2 font-mono text-xs">
-                            <div class="bg-gray-950/80 px-2.5 py-2 rounded-xl border border-gray-800/80 flex flex-col">
-                                <span class="text-gray-500 text-[9px] flex items-center gap-1">
+                            <div class="px-2.5 py-2 rounded-xl border border-[var(--border-color)] flex flex-col" style="background: var(--bg-surface-elevated);">
+                                <span class="text-[var(--text-muted)] text-[9px] flex items-center gap-1">
                                     <i class="fa-solid fa-battery-three-quarters text-emerald-400 text-[9px]"></i> Total Disponível
                                 </span>
                                 <span class="font-bold <?= $poolTextCol ?> text-xs truncate mt-0.5">
-                                    <?= number_format($pStat['totalAvailableTokens'], 0, ',', '.') ?> <span class="text-[9px] text-gray-500">tk</span>
+                                    <?= number_format($pStat['totalAvailableTokens'], 0, ',', '.') ?> <span class="text-[9px] text-[var(--text-muted)]">tk</span>
                                 </span>
                             </div>
-                            <div class="bg-gray-950/80 px-2.5 py-2 rounded-xl border border-gray-800/80 flex flex-col">
-                                <span class="text-gray-500 text-[9px] flex items-center gap-1">
+                            <div class="px-2.5 py-2 rounded-xl border border-[var(--border-color)] flex flex-col" style="background: var(--bg-surface-elevated);">
+                                <span class="text-[var(--text-muted)] text-[9px] flex items-center gap-1">
                                     <i class="fa-solid fa-fire-flame-curved text-orange-400 text-[9px]"></i> Total Consumido
                                 </span>
                                 <span class="font-bold text-amber-300 text-xs truncate mt-0.5">
-                                    <?= number_format($pStat['totalConsumedTokens'], 0, ',', '.') ?> <span class="text-[9px] text-gray-500">tk</span>
+                                    <?= number_format($pStat['totalConsumedTokens'], 0, ',', '.') ?> <span class="text-[9px] text-[var(--text-muted)]">tk</span>
                                 </span>
                             </div>
                         </div>
 
                         <!-- Barra de Progresso Consolidada do Pool -->
-                        <div class="w-full h-2 rounded-full bg-gray-950 border border-gray-800/80 overflow-hidden">
+                        <div class="w-full h-2 rounded-full border border-[var(--border-color)] overflow-hidden" style="background: var(--bg-surface-elevated);">
                             <div class="h-full <?= $poolBarCol ?> transition-all duration-700" style="width: <?= $poolPct ?>%;"></div>
                         </div>
 
-                        <div class="flex items-center justify-between text-[10px] text-gray-400 pt-0.5 font-mono">
+                        <div class="flex items-center justify-between text-[10px] text-[var(--text-muted)] pt-0.5 font-mono">
                             <span class="flex items-center space-x-1" title="Capacidade máxima combinada de todas as contas para este modelo">
-                                <i class="fa-solid fa-layer-group text-[9px] text-gray-500"></i>
+                                <i class="fa-solid fa-layer-group text-[9px]"></i>
                                 <span>Capacidade: <?= number_format($pStat['totalMaxTokens'], 0, ',', '.') ?> tk</span>
                             </span>
                             <span class="flex items-center gap-1.5">
                                 <span class="text-[9px] text-cyan-400" title="Horário de renovação de cota do Google"><i class="fa-solid fa-clock-rotate-left mr-0.5"></i> <?= $pResetLabel ?></span>
-                                <span class="px-2 py-0.5 rounded bg-gray-800 text-gray-300 font-mono text-[9px]"><?= $pStat['provider'] ?></span>
+                                <span class="px-2 py-0.5 rounded border border-[var(--border-color)] font-mono text-[9px]" style="background: var(--bg-surface-elevated); color: var(--text-heading);"><?= $pStat['provider'] ?></span>
                             </span>
                         </div>
                     </div>
@@ -738,20 +640,20 @@ require_once __DIR__ . '/includes/header.php';
 
             <!-- Gaveta com Todos os Modelos Consolidados do Pool -->
             <details class="group mt-2">
-                <summary class="cursor-pointer text-xs text-cyan-400 hover:text-cyan-300 font-bold flex items-center space-x-1.5 select-none py-1.5 px-3 rounded-xl bg-gray-900/40 hover:bg-gray-900/80 border border-gray-800 transition w-fit">
+                <summary class="cursor-pointer text-xs text-cyan-400 hover:text-cyan-300 font-bold flex items-center space-x-1.5 select-none py-1.5 px-3 rounded-xl border border-[var(--border-color)] transition w-fit" style="background: var(--bg-surface);">
                     <i class="fa-solid fa-layer-group text-[11px]"></i>
                     <span>Ver todos os <?= count($poolModelStats) ?> modelos consolidados do pool</span>
                     <i class="fa-solid fa-chevron-down text-[10px] group-open:rotate-180 transition-transform ml-1"></i>
                 </summary>
-                <div class="mt-3 grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-2.5 p-3 rounded-2xl bg-gray-950/60 border border-gray-800">
+                <div class="mt-3 grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-2.5 p-3 rounded-2xl border border-[var(--border-color)]" style="background: var(--bg-surface);">
                     <?php foreach ($poolModelStats as $allPKey => $allPStat): 
                         $allPct = $allPStat['totalMaxTokens'] > 0 ? round(($allPStat['totalAvailableTokens'] / $allPStat['totalMaxTokens']) * 100) : 0;
                         $allCol = $allPct > 50 ? 'text-emerald-400' : ($allPct > 20 ? 'text-amber-400' : 'text-red-400');
                     ?>
-                        <div class="p-2.5 rounded-xl bg-gray-900/50 border border-gray-800/60 text-xs flex items-center justify-between">
+                        <div class="p-2.5 rounded-xl border border-[var(--border-color)] text-xs flex items-center justify-between" style="background: var(--bg-surface-elevated);">
                             <div class="truncate mr-2">
-                                <div class="font-medium text-white truncate text-[11px]"><?= htmlspecialchars($allPStat['displayName']) ?></div>
-                                <div class="text-[9px] text-gray-500 font-mono truncate">
+                                <div class="font-medium text-[var(--text-heading)] truncate text-[11px]"><?= htmlspecialchars($allPStat['displayName']) ?></div>
+                                <div class="text-[9px] text-[var(--text-muted)] font-mono truncate">
                                     Disp: <?= number_format($allPStat['totalAvailableTokens'], 0, ',', '.') ?> / <?= number_format($allPStat['totalMaxTokens'], 0, ',', '.') ?> tk
                                 </div>
                             </div>
@@ -873,25 +775,11 @@ require_once __DIR__ . '/includes/header.php';
                                     <span>Apelar Ban</span>
                                 </a>
                             <?php else: ?>
-                                <!-- Botão Testar Cota Opus -->
-                                <form method="POST" action="" class="inline" onclick="event.stopPropagation();" onsubmit="return handleVerifyOpusSingle(event, <?= $acc['id'] ?>);">
-                                    <input type="hidden" name="action" value="verify_opus">
-                                    <input type="hidden" name="account_id" value="<?= $acc['id'] ?>">
-                                    <button type="submit" title="Fazer probe real na Google API para testar cota e tokens de Claude Opus" class="btn-verify-opus-single px-3 py-2 rounded-xl bg-pink-600/20 hover:bg-pink-600/30 text-pink-300 text-xs font-bold border border-pink-500/30 transition flex items-center space-x-1.5 shadow-lg shadow-pink-500/10 cursor-pointer disabled:opacity-60 disabled:cursor-not-allowed">
-                                        <i class="fa-solid fa-gem text-[11px]"></i>
-                                        <span>Testar Cota Opus</span>
-                                    </button>
-                                </form>
-
-                                <!-- Botão Sincronizar Cotas -->
-                                <form method="POST" action="" class="inline" onclick="event.stopPropagation();" onsubmit="return handleSyncSingle(event, <?= $acc['id'] ?>);">
-                                    <input type="hidden" name="action" value="sync_quotas">
-                                    <input type="hidden" name="account_id" value="<?= $acc['id'] ?>">
-                                    <button type="submit" title="Consultar cotas em tempo real diretamente na API do Google" class="btn-sync-single px-3.5 py-2 rounded-xl bg-cyan-600/20 hover:bg-cyan-600/30 text-cyan-300 text-xs font-bold border border-cyan-500/30 transition flex items-center space-x-1.5 shadow-lg shadow-cyan-500/10 cursor-pointer disabled:opacity-60 disabled:cursor-not-allowed">
-                                        <i class="fa-solid fa-arrows-rotate text-[11px]"></i>
-                                        <span>Sincronizar Cotas</span>
-                                    </button>
-                                </form>
+                                <!-- Botão Único: Verificar Cotas (Consolidado Google + Opus) -->
+                                <button type="button" onclick="event.stopPropagation(); verifyAccountQuotas(<?= $acc['id'] ?>, this);" title="Verificar cotas reais de todos os modelos e probe do Claude Opus para esta conta" class="btn-verify-single px-3.5 py-2 rounded-xl bg-cyan-600/20 hover:bg-cyan-600/30 text-cyan-300 text-xs font-bold border border-cyan-500/30 transition flex items-center space-x-1.5 shadow-md shadow-cyan-500/10 cursor-pointer disabled:opacity-60 disabled:cursor-not-allowed">
+                                    <i class="fa-solid fa-bolt text-[11px]"></i>
+                                    <span>Verificar Cotas</span>
+                                </button>
                             <?php endif; ?>
 
                             <!-- Alternar Status -->
@@ -943,13 +831,9 @@ require_once __DIR__ . '/includes/header.php';
                             <div class="p-6 rounded-2xl bg-gray-900/40 border border-gray-800 text-center space-y-3">
                                 <i class="fa-solid fa-circle-question text-3xl text-gray-600"></i>
                                 <div class="text-sm font-semibold text-gray-300">Nenhuma cota registrada para esta conta ainda.</div>
-                                <form method="POST" action="">
-                                    <input type="hidden" name="action" value="sync_quotas">
-                                    <input type="hidden" name="account_id" value="<?= $acc['id'] ?>">
-                                    <button type="submit" class="px-4 py-2 rounded-xl bg-cyan-600 hover:bg-cyan-500 text-white text-xs font-bold transition">
-                                        <i class="fa-solid fa-rotate mr-1"></i> Consultar Cotas no Google Agora
-                                    </button>
-                                </form>
+                                <button type="button" onclick="verifyAccountQuotas(<?= $acc['id'] ?>, this);" class="px-4 py-2 rounded-xl bg-cyan-600 hover:bg-cyan-500 text-white text-xs font-bold transition shadow-md shadow-cyan-600/20 cursor-pointer">
+                                    <i class="fa-solid fa-bolt mr-1"></i> Consultar Cotas no Google Agora
+                                </button>
                             </div>
                         <?php else: ?>
                             <!-- Origem dos Dados e Status das Cotas -->
@@ -1250,178 +1134,130 @@ function hideBadgeStatus(delay = 3000) {
     }, delay);
 }
 
-// Testar cota do Claude Opus em todas as contas via AJAX
-async function handleVerifyOpusAll(e) {
-    if (e) e.preventDefault();
-    const btn = document.getElementById('btnVerifyOpusAll');
-    const icon = document.getElementById('verifyOpusIcon');
-    const text = document.getElementById('verifyOpusText');
+// SISTEMA UNIFICADO DE SINCRONIZAÇÃO E VERIFICAÇÃO DE COTAS
+let isVerifyingQuotas = false;
 
-    if (btn) btn.disabled = true;
-    if (icon) icon.className = 'fa-solid fa-flask-vial fa-bounce text-sm';
-    if (text) text.innerText = 'Testando Opus na Google API...';
-    showBadgeStatus('<i class="fa-solid fa-circle-notch fa-spin text-[10px]"></i><span>Testando cota real do Claude Opus...</span>', 'loading');
+// Função única para verificar todas as contas (Google API Quotas + Probe Real Opus)
+async function verifyAllQuotas() {
+    if (isVerifyingQuotas) return false;
+    isVerifyingQuotas = true;
+
+    const btnSyncAll = document.getElementById('btnSyncAll');
+    const syncAllIcon = document.getElementById('syncAllIcon');
+    const syncAllText = document.getElementById('syncAllText');
+    const btnMainList = document.querySelectorAll('.btn-verify-all-main');
+
+    if (btnSyncAll) btnSyncAll.disabled = true;
+    if (syncAllIcon) syncAllIcon.className = 'fa-solid fa-bolt fa-bounce text-[11px] text-amber-400';
+    if (syncAllText) syncAllText.innerText = 'Verificando todas as contas...';
+
+    btnMainList.forEach(b => {
+        b.disabled = true;
+        b.innerHTML = '<i class="fa-solid fa-circle-notch fa-spin text-sm"></i><span>Verificando Cotas & Opus...</span>';
+    });
+
+    showBadgeStatus('<i class="fa-solid fa-circle-notch fa-spin text-[10px]"></i><span>Consultando Google API e testando Claude Opus em todas as contas...</span>', 'loading');
 
     try {
-        const res = await fetch('accounts.php?ajax_verify_opus=1', { cache: 'no-store' });
+        const res = await fetch('accounts.php?ajax_verify_quotas=1', { cache: 'no-store' });
         const data = await res.json();
+
         if (data.success) {
-            const count = data.opusAvailableCount || 0;
+            const opusCount = data.opusAvailableCount || 0;
             const total = data.totalChecked || 0;
             const tkAvail = (data.opusTotalAvailableTokens || 0).toLocaleString('pt-BR');
             const tkMax = (data.opusTotalMaxTokens || 0).toLocaleString('pt-BR');
-            const msg = `${count} de ${total} conta(s) com Opus ativo (${tkAvail} de ${tkMax} tokens livres no pool)!`;
-            showBadgeStatus('<i class="fa-solid fa-gem text-[10px] text-pink-400"></i><span>' + msg + '</span>', 'success');
-            if (icon) icon.className = 'fa-solid fa-check text-sm text-emerald-400';
-            if (text) text.innerText = 'Teste Concluído!';
+
+            const msg = `Sucesso! ${total} conta(s) sincronizadas (${opusCount} com Claude Opus ativo - ${tkAvail} de ${tkMax} tk livres no pool)`;
+            showBadgeStatus('<i class="fa-solid fa-circle-check text-[10px] text-emerald-400"></i><span>' + msg + '</span>', 'success');
+
             sessionStorage.setItem('last_pool_sync_ts', Date.now());
             setTimeout(() => window.location.reload(), 1300);
         } else {
-            showBadgeStatus('<i class="fa-solid fa-circle-exclamation text-[10px]"></i><span>' + (data.error || 'Erro no teste de cota') + '</span>', 'error');
-            if (btn) btn.disabled = false;
-            if (icon) icon.className = 'fa-solid fa-flask-vial text-sm';
-            if (text) text.innerText = 'Testar Cota Opus de Todas as Contas';
+            showBadgeStatus('<i class="fa-solid fa-circle-exclamation text-[10px]"></i><span>' + (data.error || 'Falha na verificação de cotas') + '</span>', 'error');
+            resetAllButtons();
             hideBadgeStatus(6000);
         }
     } catch (err) {
-        showBadgeStatus('<i class="fa-solid fa-circle-exclamation text-[10px]"></i><span>Falha na comunicação</span>', 'error');
-        if (btn) btn.disabled = false;
-        if (icon) icon.className = 'fa-solid fa-flask-vial text-sm';
-        if (text) text.innerText = 'Testar Cota Opus de Todas as Contas';
+        showBadgeStatus('<i class="fa-solid fa-circle-exclamation text-[10px]"></i><span>Erro de conexão com o servidor</span>', 'error');
+        resetAllButtons();
         hideBadgeStatus(6000);
     }
+
     return false;
 }
 
-// Testar cota do Claude Opus em uma única conta via AJAX
-async function handleVerifyOpusSingle(e, accId) {
-    if (e) e.preventDefault();
-    const form = e ? (e.target.tagName === 'FORM' ? e.target : e.target.closest('form')) : null;
-    const btn = form ? form.querySelector('button[type="submit"]') : null;
-    const oldHtml = btn ? btn.innerHTML : '';
+function resetAllButtons() {
+    isVerifyingQuotas = false;
+    const btnSyncAll = document.getElementById('btnSyncAll');
+    const syncAllIcon = document.getElementById('syncAllIcon');
+    const syncAllText = document.getElementById('syncAllText');
+    const btnMainList = document.querySelectorAll('.btn-verify-all-main');
 
-    if (btn) {
-        btn.disabled = true;
-        btn.innerHTML = '<i class="fa-solid fa-spinner fa-spin text-[11px]"></i> <span>Testando probe...</span>';
+    if (btnSyncAll) btnSyncAll.disabled = false;
+    if (syncAllIcon) syncAllIcon.className = 'fa-solid fa-arrows-rotate text-[11px]';
+    if (syncAllText) syncAllText.innerText = 'Sincronizar Todas as Cotas';
+
+    btnMainList.forEach(b => {
+        b.disabled = false;
+        b.innerHTML = '<i class="fa-solid fa-bolt text-sm"></i><span>Verificar Todas as Cotas</span>';
+    });
+}
+
+// Função única para verificar uma única conta
+async function verifyAccountQuotas(accId, btnEl) {
+    if (!accId) return false;
+    const oldHtml = btnEl ? btnEl.innerHTML : '';
+
+    if (btnEl) {
+        btnEl.disabled = true;
+        btnEl.innerHTML = '<i class="fa-solid fa-spinner fa-spin text-[11px]"></i> <span>Verificando...</span>';
     }
 
+    showBadgeStatus('<i class="fa-solid fa-circle-notch fa-spin text-[10px]"></i><span>Verificando cotas e probe de Opus para a conta...</span>', 'loading');
+
     try {
-        const res = await fetch('accounts.php?ajax_verify_opus=1&account_id=' + accId, { cache: 'no-store' });
+        const res = await fetch(`accounts.php?ajax_verify_quotas=1&account_id=${accId}`, { cache: 'no-store' });
         const data = await res.json();
+
         if (data.success) {
-            const resItem = data.results && data.results[0] ? data.results[0] : null;
+            const resItem = (data.results && data.results[0]) ? data.results[0] : null;
             const hasOpus = resItem ? resItem.hasOpus : false;
             const availTk = resItem ? (resItem.availableTokens || 0).toLocaleString('pt-BR') : '0';
-            const maxTk = resItem ? (resItem.maxTokens || 1048576).toLocaleString('pt-BR') : '1.048.576';
 
-            if (btn) {
-                if (hasOpus) {
-                    btn.innerHTML = `<i class="fa-solid fa-gem text-[11px] text-pink-400"></i> <span class="text-pink-300 font-mono">${availTk} tk</span>`;
-                } else {
-                    btn.innerHTML = `<i class="fa-solid fa-ban text-[11px] text-rose-400"></i> <span class="text-rose-300 font-mono">0 / ${maxTk} tk</span>`;
-                }
+            if (btnEl) {
+                btnEl.innerHTML = '<i class="fa-solid fa-check text-[11px] text-emerald-400"></i> <span class="text-emerald-300">Cotas Atualizadas!</span>';
             }
+
             const statusMsg = hasOpus 
-                ? `Conta ${resItem?.email || ''}: Confirmada com ${availTk} tokens livres!`
-                : `Conta ${resItem?.email || ''}: 0 tokens (Sem cota/assinatura no Google)`;
-            showBadgeStatus(`<i class="fa-solid fa-gem text-[10px] text-pink-400"></i><span>${statusMsg}</span>`, hasOpus ? 'success' : 'error');
+                ? `Conta ${resItem?.email || ''}: Sincronizada com Claude Opus liberado (${availTk} tokens)!`
+                : `Conta ${resItem?.email || ''}: Sincronizada com sucesso!`;
+
+            showBadgeStatus('<i class="fa-solid fa-circle-check text-[10px] text-emerald-400"></i><span>' + statusMsg + '</span>', 'success');
 
             sessionStorage.setItem('last_pool_sync_ts', Date.now());
             setTimeout(() => window.location.reload(), 1200);
         } else {
-            alert(data.error || 'Erro ao testar conta.');
-            if (btn) {
-                btn.disabled = false;
-                btn.innerHTML = oldHtml;
+            alert(data.error || 'Erro ao verificar cotas da conta.');
+            if (btnEl) {
+                btnEl.disabled = false;
+                btnEl.innerHTML = oldHtml;
             }
+            hideBadgeStatus(4000);
         }
     } catch (err) {
         alert('Erro ao se comunicar com o servidor: ' + err.message);
-        if (btn) {
-            btn.disabled = false;
-            btn.innerHTML = oldHtml;
+        if (btnEl) {
+            btnEl.disabled = false;
+            btnEl.innerHTML = oldHtml;
         }
+        hideBadgeStatus(4000);
     }
+
     return false;
 }
 
-// Sincronizar todas as contas via AJAX
-async function handleSyncAll(e) {
-    if (e) e.preventDefault();
-    const btn = document.getElementById('btnSyncAll');
-    const icon = document.getElementById('syncAllIcon');
-    const text = document.getElementById('syncAllText');
-
-    if (btn) btn.disabled = true;
-    if (icon) icon.className = 'fa-solid fa-arrows-rotate fa-spin text-[11px]';
-    if (text) text.innerText = 'Sincronizando Todas...';
-    showBadgeStatus('<i class="fa-solid fa-circle-notch fa-spin text-[10px]"></i><span>Sincronizando pool de contas...</span>', 'loading');
-
-    try {
-        const res = await fetch('accounts.php?ajax_sync=1', { cache: 'no-store' });
-        const data = await res.json();
-        if (data.success) {
-            showBadgeStatus('<i class="fa-solid fa-circle-check text-[10px]"></i><span>Todas as contas sincronizadas!</span>', 'success');
-            if (icon) icon.className = 'fa-solid fa-check text-[11px] text-emerald-400';
-            if (text) text.innerText = 'Cotas Atualizadas!';
-            sessionStorage.setItem('last_pool_sync_ts', Date.now());
-            setTimeout(() => window.location.reload(), 1000);
-        } else {
-            showBadgeStatus('<i class="fa-solid fa-circle-exclamation text-[10px]"></i><span>' + (data.error || 'Erro na sincronização') + '</span>', 'error');
-            if (btn) btn.disabled = false;
-            if (icon) icon.className = 'fa-solid fa-arrows-rotate text-[11px]';
-            if (text) text.innerText = 'Sincronizar Todas as Cotas';
-            hideBadgeStatus(5000);
-        }
-    } catch (err) {
-        showBadgeStatus('<i class="fa-solid fa-circle-exclamation text-[10px]"></i><span>Falha na comunicação</span>', 'error');
-        if (btn) btn.disabled = false;
-        if (icon) icon.className = 'fa-solid fa-arrows-rotate text-[11px]';
-        if (text) text.innerText = 'Sincronizar Todas as Cotas';
-        hideBadgeStatus(5000);
-    }
-    return false;
-}
-
-// Sincronizar uma conta individual via AJAX
-async function handleSyncSingle(e, accId) {
-    if (e) e.preventDefault();
-    const form = e ? (e.target.tagName === 'FORM' ? e.target : e.target.closest('form')) : null;
-    const btn = form ? form.querySelector('button[type="submit"]') : null;
-    const oldHtml = btn ? btn.innerHTML : '';
-
-    if (btn) {
-        btn.disabled = true;
-        btn.innerHTML = '<i class="fa-solid fa-arrows-rotate fa-spin text-[11px]"></i> <span>Sincronizando...</span>';
-    }
-
-    try {
-        const res = await fetch('accounts.php?ajax_sync=1&account_id=' + accId, { cache: 'no-store' });
-        const data = await res.json();
-        if (data.success) {
-            if (btn) {
-                btn.innerHTML = '<i class="fa-solid fa-check text-[11px] text-emerald-400"></i> <span class="text-emerald-300">Sincronizado!</span>';
-            }
-            sessionStorage.setItem('last_pool_sync_ts', Date.now());
-            setTimeout(() => window.location.reload(), 1000);
-        } else {
-            alert(data.error || 'Erro ao sincronizar conta.');
-            if (btn) {
-                btn.disabled = false;
-                btn.innerHTML = oldHtml;
-            }
-        }
-    } catch (err) {
-        alert('Erro ao se comunicar com o servidor: ' + err.message);
-        if (btn) {
-            btn.disabled = false;
-            btn.innerHTML = oldHtml;
-        }
-    }
-    return false;
-}
-
-// Sincronização automática em segundo plano ao entrar na página
+// Verificação inteligente e automática em segundo plano ao abrir a página
 document.addEventListener('DOMContentLoaded', function() {
     const poolCard = document.getElementById('poolConsolidatedCard');
     const secondsSinceLastSync = poolCard ? parseInt(poolCard.dataset.secondsSinceSync || '99999') : 99999;
@@ -1429,25 +1265,24 @@ document.addEventListener('DOMContentLoaded', function() {
     const lastSessionSync = sessionStorage.getItem('last_pool_sync_ts');
     const now = Date.now();
 
-    // Se já sincronizou nesta sessão há menos de 60 segundos, apenas exibe badge discreto
-    if (lastSessionSync && (now - parseInt(lastSessionSync)) < 60000) {
+    // Se já foi sincronizado nos últimos 90 segundos nesta aba, exibe selo em tempo real
+    if (lastSessionSync && (now - parseInt(lastSessionSync)) < 90000) {
         showBadgeStatus('<i class="fa-solid fa-bolt text-[10px] text-emerald-400"></i><span>Cotas em tempo real</span>', 'success');
         hideBadgeStatus(3500);
         return;
     }
 
-    // Se há contas ativas e a última sincronização foi há mais de 45 segundos (ou nunca):
-    if (activeAccounts > 0 && secondsSinceLastSync > 45) {
-        showBadgeStatus('<i class="fa-solid fa-arrows-rotate fa-spin text-[10px]"></i><span>Sincronizando cotas em segundo plano...</span>', 'loading');
+    // Se há contas ativas e a última sincronização no banco tem mais de 60 segundos:
+    if (activeAccounts > 0 && secondsSinceLastSync > 60) {
+        showBadgeStatus('<i class="fa-solid fa-arrows-rotate fa-spin text-[10px]"></i><span>Sincronizando cotas e probe de Opus automaticamente...</span>', 'loading');
 
-        fetch('accounts.php?ajax_sync=1', { cache: 'no-store' })
+        fetch('accounts.php?ajax_verify_quotas=1', { cache: 'no-store' })
             .then(res => res.json())
             .then(data => {
                 if (data.success) {
                     sessionStorage.setItem('last_pool_sync_ts', Date.now());
-                    showBadgeStatus('<i class="fa-solid fa-circle-check text-[10px]"></i><span>Cotas atualizadas com sucesso!</span>', 'success');
-                    // Atualiza a tela suavemente para refletir as cotas novas
-                    setTimeout(() => window.location.reload(), 1200);
+                    showBadgeStatus('<i class="fa-solid fa-circle-check text-[10px]"></i><span>Cotas atualizadas automaticamente!</span>', 'success');
+                    setTimeout(() => window.location.reload(), 1300);
                 } else {
                     hideBadgeStatus(2000);
                 }

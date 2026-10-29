@@ -11,7 +11,9 @@ $error = '';
 
 // Processar formulários POST
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
-    if ($_POST['action'] === 'save_bot_settings') {
+    if (!validate_csrf()) {
+        $error = 'Sessão expirada ou token de segurança CSRF inválido. Recarregue a página.';
+    } elseif ($_POST['action'] === 'save_bot_settings') {
         $botActive = isset($_POST['whatsapp_bot_active']) ? '1' : '0';
         $botModel = trim($_POST['whatsapp_bot_model'] ?? 'gemini-3.8-flash-medium');
         $botPrompt = trim($_POST['whatsapp_bot_prompt'] ?? '');

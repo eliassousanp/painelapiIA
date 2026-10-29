@@ -1,5 +1,14 @@
 import https from 'https';
 
+// Agent HTTPS com Keep-Alive de alta performance para reutilização de conexões e latência ultrabaixa
+const keepAliveAgent = new https.Agent({
+  keepAlive: true,
+  maxSockets: 100,
+  maxFreeSockets: 25,
+  timeout: 600000,
+  keepAliveMsecs: 30000
+});
+
 const DAILY_ENDPOINT = 'https://daily-cloudcode-pa.googleapis.com';
 const CLOUD_CODE_ENDPOINT = 'https://cloudcode-pa.googleapis.com';
 
@@ -18,7 +27,7 @@ const CLIENT_METADATA = {
   pluginType: 2
 };
 
-function postRequest(endpointUrl, bodyData, accessToken, timeoutMs = 300000) {
+function postRequest(endpointUrl, bodyData, accessToken, timeoutMs = 600000) {
   return new Promise((resolve, reject) => {
     const parsed = new URL(endpointUrl);
     const postBody = JSON.stringify(bodyData);
@@ -28,6 +37,7 @@ function postRequest(endpointUrl, bodyData, accessToken, timeoutMs = 300000) {
       port: 443,
       path: parsed.pathname + parsed.search,
       method: 'POST',
+      agent: keepAliveAgent,
       headers: {
         ...HEADERS,
         'Authorization': `Bearer ${accessToken}`,
@@ -194,6 +204,7 @@ export function streamGenerateContent(accessToken, projectId, model, contents, s
       port: 443,
       path: parsed.pathname + parsed.search,
       method: 'POST',
+      agent: keepAliveAgent,
       headers: {
         ...HEADERS,
         'Authorization': `Bearer ${accessToken}`,
@@ -222,7 +233,7 @@ export function streamGenerateContent(accessToken, projectId, model, contents, s
       let capturedToolCalls = [];
 
       res.on('data', chunk => {
-        req.setTimeout(300000); // Reseta o timeout de 5 minutos sempre que novos dados chegam
+        req.setTimeout(600000); // Reseta o timeout de 10 minutos sempre que novos dados chegam
         if (abortSignal?.aborted) {
           req.destroy();
           return;
@@ -249,7 +260,12 @@ export function streamGenerateContent(accessToken, projectId, model, contents, s
                 if (p.thoughtSignature || p.thought_signature) {
                   chunkSig = p.thoughtSignature || p.thought_signature;
                 }
-                if (p.thought) continue;
+                if (p.thought) {
+                  if (typeof onChunk === 'function') {
+                    onChunk(null, null, { thinking: true, thought: p.text || '' });
+                  }
+                  continue;
+                }
                 if (p.text) {
                   fullReplyText += p.text;
                   if (typeof onChunk === 'function') {
@@ -303,7 +319,7 @@ export function streamGenerateContent(accessToken, projectId, model, contents, s
       }
     });
 
-    req.setTimeout(300000, () => req.destroy(new Error('Timeout de stream com a Google CloudCode API (300s)')));
+    req.setTimeout(600000, () => req.destroy(new Error('Timeout de stream com a Google CloudCode API (600s)')));
     req.write(postBody);
     req.end();
   });

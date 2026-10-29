@@ -9,7 +9,9 @@ $msg = '';
 $error = '';
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
-    if ($_POST['action'] === 'create_user') {
+    if (!validate_csrf()) {
+        $error = 'Sessão expirada ou token de segurança CSRF inválido. Recarregue a página.';
+    } elseif ($_POST['action'] === 'create_user') {
         $name = trim($_POST['name'] ?? '');
         $whatsapp = trim($_POST['whatsapp'] ?? '');
         $email = trim($_POST['email'] ?? '');
@@ -31,9 +33,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
                 $stmtInsert = $db->prepare("INSERT INTO users (name, whatsapp, email, password, password_hash, role, balance_tokens, status, is_whatsapp_verified) VALUES (?, ?, ?, ?, ?, ?, ?, 'active', 1)");
                 $stmtInsert->execute([$name, $cleanWa, $email ?: null, $passwordHash, $passwordHash, $role, $initialTokens]);
                 
-                // Gerar chave de API inicial automaticamente
+                // Gerar chave de API inicial automaticamente no padrão global
                 $newUserId = $db->lastInsertId();
-                $newApiKey = 'sk-ai-' . bin2hex(random_bytes(16));
+                $newApiKey = generateApiKey();
                 $stmtKey = $db->prepare("INSERT INTO api_keys (user_id, key_name, api_key) VALUES (?, 'Chave Inicial', ?)");
                 $stmtKey->execute([$newUserId, $newApiKey]);
 

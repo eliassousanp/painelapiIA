@@ -41,9 +41,13 @@ if ($action === 'check_status') {
         $st = strtoupper(trim($apiCheck['status'] ?? $apiCheck['data']['status'] ?? ''));
 
         if (in_array($st, ['COMPLETO', 'PAID', 'APPROVED', 'CONCLUIDO'], true)) {
-            // Aprova e libera tokens
-            $db->prepare("UPDATE payments SET status = 'paid', updated_at = NOW() WHERE id = ?")->execute([$payment['id']]);
-            $db->prepare("UPDATE users SET balance_tokens = balance_tokens + ? WHERE id = ?")->execute([$payment['tokens_amount'], $payment['user_id']]);
+            // Aprova e libera tokens de forma estritamente atômica (anti race-condition)
+            $stmtUpd = $db->prepare("UPDATE payments SET status = 'paid', updated_at = NOW() WHERE id = ? AND status = 'pending'");
+            $stmtUpd->execute([$payment['id']]);
+
+            if ($stmtUpd->rowCount() > 0) {
+                $db->prepare("UPDATE users SET balance_tokens = balance_tokens + ? WHERE id = ?")->execute([$payment['tokens_amount'], $payment['user_id']]);
+            }
 
             echo json_encode(['success' => true, 'paid' => true, 'message' => 'Pagamento aprovado e tokens creditados!']);
             exit;
