@@ -27,6 +27,7 @@ import {
 import AntigravityAccountPool from './services/account_pool.js';
 
 import fs from 'fs';
+import { spawn } from 'child_process';
 
 const app = express();
 app.disable('x-powered-by');
@@ -2468,5 +2469,56 @@ httpServer.listen(PORT, () => {
   console.log(`🎙️  Realtime WebSocket:  ws://localhost:${PORT}/v1/realtime`);
   console.log(`🤖 Claude Code MCP:   claude mcp add --transport sse painel-subagente http://localhost:${PORT}/mcp/sse --header "Authorization: Bearer SUA_API_KEY"`);
   console.log(`=============================================================\n`);
+
+  // Túnel HTTPS automático para clientes que exigem SSL (como Claude Desktop e Claude.ai)
+  const shouldStartTunnel = process.env.MCP_HTTPS_TUNNEL !== 'false' && (process.platform === 'win32' || process.env.MCP_HTTPS_TUNNEL === 'true');
+
+  if (shouldStartTunnel) {
+    let tunnelProcess = null;
+    function startHttpsTunnel() {
+      try {
+        console.log(`🔄 Gerando link HTTPS público para o Claude Desktop... Aguarde...`);
+        const isWin = process.platform === 'win32';
+        const cmd = isWin ? 'cmd.exe' : 'npx';
+        const args = isWin 
+          ? ['/c', 'npx', '--yes', 'localtunnel', '--port', String(PORT)]
+          : ['--yes', 'localtunnel', '--port', String(PORT)];
+
+        tunnelProcess = spawn(cmd, args, { stdio: ['ignore', 'pipe', 'pipe'] });
+
+        tunnelProcess.stdout.on('data', (data) => {
+          const text = data.toString();
+          const match = text.match(/https:\/\/[a-z0-9-]+\.loca\.lt/i);
+          if (match) {
+            const httpsUrl = match[0];
+            console.log(`\n🔒 =============================================================`);
+            console.log(`🌐 TÚNEL HTTPS ATIVO PARA O CLAUDE DESKTOP:`);
+            console.log(`👉 Link oficial para colar no Claude Desktop:`);
+            console.log(`   ${httpsUrl}/mcp/sse?apiKey=SUA_CHAVE_DO_PAINEL`);
+            console.log(`🔒 =============================================================\n`);
+          }
+        });
+
+        tunnelProcess.on('exit', () => {
+          if (!process.exitCode) {
+            setTimeout(startHttpsTunnel, 5000);
+          }
+        });
+      } catch (e) {
+        console.warn('[Tunnel Warning] Não foi possível iniciar túnel HTTPS automático:', e.message);
+      }
+    }
+
+    startHttpsTunnel();
+
+    process.on('SIGINT', () => {
+      if (tunnelProcess) tunnelProcess.kill();
+      process.exit(0);
+    });
+    process.on('SIGTERM', () => {
+      if (tunnelProcess) tunnelProcess.kill();
+      process.exit(0);
+    });
+  }
 });
 
