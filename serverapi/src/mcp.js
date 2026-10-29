@@ -149,6 +149,62 @@ function readCodeFile(caminho, linhaInicio = 1, linhaFim = null) {
 }
 
 /**
+ * Cria ou sobrescreve um arquivo no disco com o conteúdo fornecido.
+ */
+function writeCodeFile(caminho, conteudo, sobrescrever = true) {
+  if (typeof conteudo !== 'string') {
+    throw new Error('Conteúdo inválido: deve ser uma string de texto.');
+  }
+
+  const safePath = resolveSafePath(caminho);
+  const exists = fs.existsSync(safePath);
+
+  if (exists && !sobrescrever) {
+    throw new Error(`O arquivo "${caminho}" já existe e o parâmetro sobrescrever está definido como falso.`);
+  }
+
+  // Cria pastas pai se não existirem
+  const parentDir = path.dirname(safePath);
+  if (!fs.existsSync(parentDir)) {
+    fs.mkdirSync(parentDir, { recursive: true });
+  }
+
+  fs.writeFileSync(safePath, conteudo, 'utf8');
+  const action = exists ? 'atualizado' : 'criado';
+  const size = Buffer.byteLength(conteudo, 'utf8');
+  const lineCount = conteudo.split(/\r?\n/).length;
+
+  return `✅ Arquivo ${action} com sucesso!\nCaminho: ${safePath}\nTamanho: ${size} bytes (${lineCount} linhas)`;
+}
+
+/**
+ * Substitui um trecho exato de código dentro de um arquivo existente.
+ */
+function editCodeFile(caminho, alvo, substituicao) {
+  if (!alvo || typeof alvo !== 'string') {
+    throw new Error('Informe o trecho de texto exato a ser substituído (alvo).');
+  }
+  if (typeof substituicao !== 'string') {
+    throw new Error('Informe o novo texto de substituição (substituicao).');
+  }
+
+  const safePath = resolveSafePath(caminho);
+  if (!fs.existsSync(safePath) || !fs.statSync(safePath).isFile()) {
+    throw new Error(`Arquivo não encontrado para edição: ${caminho}`);
+  }
+
+  const content = fs.readFileSync(safePath, 'utf8');
+  if (!content.includes(alvo)) {
+    throw new Error(`O trecho alvo não foi encontrado no arquivo "${caminho}". Certifique-se de que o texto, quebras de linha e indentação correspondam exatamente ao arquivo atual.`);
+  }
+
+  const updated = content.replace(alvo, substituicao);
+  fs.writeFileSync(safePath, updated, 'utf8');
+
+  return `✅ Arquivo "${safePath}" editado com sucesso!\nO trecho especificado foi substituído com êxito.`;
+}
+
+/**
  * Varre e lista os arquivos de um diretório com filtros.
  * Suporta qualquer projeto ou subpasta (caminhos absolutos ou relativos).
  */
@@ -903,6 +959,66 @@ export function initMcp(app, gateway) {
       }
     );
 
+    // -------------------------------------------------------------
+    // TOOL 7: Escrever Arquivo (Criar ou sobrescrever)
+    // -------------------------------------------------------------
+    server.tool(
+      'escrever_arquivo',
+      'Cria um novo arquivo ou substitui o conteúdo completo de um arquivo existente no disco. Cria diretórios automaticamente.' + DESC_TOOL_DISCO,
+      {
+        caminho: z.string().describe('Caminho do arquivo (relativo ou absoluto, ex: "app/Models/NovoModel.php" ou "C:/xampp/htdocs/saas/routes/web.php")'),
+        conteudo: z.string().describe('Conteúdo textual completo a ser gravado no arquivo'),
+        sobrescrever: z.boolean().optional().describe('Se deve sobrescrever se o arquivo já existir (padrão: true)')
+      },
+      async ({ caminho, conteudo, sobrescrever = true }) => {
+        await refreshMcpMode().catch(() => {});
+        if (!localModeEnabled) {
+          return { isError: true, content: [{ type: 'text', text: DISK_OFF_MSG }] };
+        }
+        try {
+          const msg = writeCodeFile(caminho, conteudo, sobrescrever);
+          return {
+            content: [{ type: 'text', text: msg }]
+          };
+        } catch (err) {
+          return {
+            isError: true,
+            content: [{ type: 'text', text: `Erro ao escrever arquivo "${caminho}": ${err.message}` }]
+          };
+        }
+      }
+    );
+
+    // -------------------------------------------------------------
+    // TOOL 8: Editar Arquivo (Substituição cirúrgica de trecho)
+    // -------------------------------------------------------------
+    server.tool(
+      'editar_arquivo',
+      'Substitui um trecho específico de texto em um arquivo existente mantendo todo o restante intacto.' + DESC_TOOL_DISCO,
+      {
+        caminho: z.string().describe('Caminho do arquivo a ser editado (relativo ou absoluto)'),
+        alvo: z.string().describe('Trecho de texto exato a ser localizado e substituído (deve coincidir exatamente com o arquivo)'),
+        substituicao: z.string().describe('Novo texto que substituirá o trecho alvo')
+      },
+      async ({ caminho, alvo, substituicao }) => {
+        await refreshMcpMode().catch(() => {});
+        if (!localModeEnabled) {
+          return { isError: true, content: [{ type: 'text', text: DISK_OFF_MSG }] };
+        }
+        try {
+          const msg = editCodeFile(caminho, alvo, substituicao);
+          return {
+            content: [{ type: 'text', text: msg }]
+          };
+        } catch (err) {
+          return {
+            isError: true,
+            content: [{ type: 'text', text: `Erro ao editar arquivo "${caminho}": ${err.message}` }]
+          };
+        }
+      }
+    );
+
     // Heartbeat periódico (a cada 8 segundos) via comentário SSE ": keepalive\n\n"
     // Isso mantém proxies intermediários, Cloudflare (100s) e clientes Claude conectados durante raciocínios longos
     const keepAliveTimer = setInterval(() => {
@@ -1148,6 +1264,32 @@ export function initMcp(app, gateway) {
                   },
                   required: ['termo']
                 }
+              },
+              {
+                name: 'escrever_arquivo',
+                description: 'Cria ou sobrescreve um arquivo no disco com o conteúdo especificado' + DESC_TOOL_DISCO,
+                inputSchema: {
+                  type: 'object',
+                  properties: {
+                    caminho: { type: 'string', description: 'Caminho do arquivo (relativo ou absoluto)' },
+                    conteudo: { type: 'string', description: 'Conteúdo textual completo do arquivo' },
+                    sobrescrever: { type: 'boolean', description: 'Sobrescrever se já existir (padrão: true)' }
+                  },
+                  required: ['caminho', 'conteudo']
+                }
+              },
+              {
+                name: 'editar_arquivo',
+                description: 'Substitui cirurgicamente um trecho específico de texto em um arquivo existente' + DESC_TOOL_DISCO,
+                inputSchema: {
+                  type: 'object',
+                  properties: {
+                    caminho: { type: 'string', description: 'Caminho do arquivo a ser editado' },
+                    alvo: { type: 'string', description: 'Texto exato a ser localizado e substituído' },
+                    substituicao: { type: 'string', description: 'Novo texto que substituirá o alvo' }
+                  },
+                  required: ['caminho', 'alvo', 'substituicao']
+                }
               }
             ]
           }
@@ -1284,6 +1426,62 @@ export function initMcp(app, gateway) {
             result: {
               isError: true,
               content: [{ type: 'text', text: `Erro ao buscar no código: ${err.message}` }]
+            }
+          });
+        }
+      }
+
+      if (toolName === 'escrever_arquivo') {
+        if (!localModeEnabled) {
+          return res.status(200).json({
+            jsonrpc: '2.0', id: msgId,
+            result: { isError: true, content: [{ type: 'text', text: DISK_OFF_MSG }] }
+          });
+        }
+        try {
+          const msg = writeCodeFile(args.caminho, args.conteudo, args.sobrescrever !== false);
+          return res.status(200).json({
+            jsonrpc: '2.0',
+            id: msgId,
+            result: {
+              content: [{ type: 'text', text: msg }]
+            }
+          });
+        } catch (err) {
+          return res.status(200).json({
+            jsonrpc: '2.0',
+            id: msgId,
+            result: {
+              isError: true,
+              content: [{ type: 'text', text: `Erro ao escrever arquivo: ${err.message}` }]
+            }
+          });
+        }
+      }
+
+      if (toolName === 'editar_arquivo') {
+        if (!localModeEnabled) {
+          return res.status(200).json({
+            jsonrpc: '2.0', id: msgId,
+            result: { isError: true, content: [{ type: 'text', text: DISK_OFF_MSG }] }
+          });
+        }
+        try {
+          const msg = editCodeFile(args.caminho, args.alvo, args.substituicao);
+          return res.status(200).json({
+            jsonrpc: '2.0',
+            id: msgId,
+            result: {
+              content: [{ type: 'text', text: msg }]
+            }
+          });
+        } catch (err) {
+          return res.status(200).json({
+            jsonrpc: '2.0',
+            id: msgId,
+            result: {
+              isError: true,
+              content: [{ type: 'text', text: `Erro ao editar arquivo: ${err.message}` }]
             }
           });
         }
