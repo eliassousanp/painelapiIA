@@ -2,6 +2,201 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { SSEServerTransport } from '@modelcontextprotocol/sdk/server/sse.js';
 import { z } from 'zod';
 import crypto from 'crypto';
+import fs from 'fs';
+import path from 'path';
+import { fileURLToPath } from 'url';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+
+// Diretório raiz do projeto (suporta WORKSPACE_DIR no .env ou relativo a serverapi/src)
+const defaultProjectRoot = process.env.WORKSPACE_DIR 
+  ? path.resolve(process.env.WORKSPACE_DIR) 
+  : path.resolve(__dirname, '../../');
+
+const IGNORED_DIRS = new Set([
+  'node_modules',
+  '.git',
+  'auth_info_baileys',
+  'logs',
+  '.claude',
+  '.idea',
+  '.vscode',
+  'vendor'
+]);
+
+const BLOCKED_FILES = new Set([
+  '.env',
+  'database.php',
+  'install.lock',
+  'id_rsa',
+  'id_rsa.pub'
+]);
+
+/**
+ * Valida e resolve caminho seguro dentro do projeto (impede Path Traversal e vazamento de chaves)
+ */
+function resolveSafePath(userPath, baseDir = defaultProjectRoot) {
+  if (!userPath || typeof userPath !== 'string') {
+    throw new Error('Caminho de arquivo inválido ou não informado.');
+  }
+
+  const target = path.isAbsolute(userPath) ? path.normalize(userPath) : path.resolve(baseDir, userPath);
+  const rel = path.relative(baseDir, target);
+
+  if (rel.startsWith('..') && !target.startsWith(baseDir)) {
+    throw new Error(`Acesso negado: O caminho "${userPath}" está fora do diretório do projeto.`);
+  }
+
+  const basename = path.basename(target).toLowerCase();
+  if (BLOCKED_FILES.has(basename) || basename.endsWith('.pem') || basename.endsWith('.key')) {
+    throw new Error(`Acesso negado: O arquivo "${basename}" contém dados confidenciais e foi protegido.`);
+  }
+
+  return target;
+}
+
+/**
+ * Lê arquivo de código com numeração de linhas e suporte a paginação
+ */
+function readCodeFile(caminho, linhaInicio = 1, linhaFim = null) {
+  const safePath = resolveSafePath(caminho);
+  if (!fs.existsSync(safePath) || !fs.statSync(safePath).isFile()) {
+    throw new Error(`Arquivo não encontrado no projeto: ${caminho}`);
+  }
+
+  const raw = fs.readFileSync(safePath, 'utf8');
+  const allLines = raw.split(/\r?\n/);
+  const total = allLines.length;
+
+  const start = Math.max(1, parseInt(linhaInicio, 10) || 1);
+  const end = linhaFim ? Math.min(total, parseInt(linhaFim, 10)) : Math.min(total, start + 499);
+
+  const selected = [];
+  for (let i = start; i <= end; i++) {
+    selected.push(`${i} | ${allLines[i - 1]}`);
+  }
+
+  let header = `[Arquivo: ${caminho} | Exibindo linhas ${start} a ${end} de ${total}]`;
+  if (end < total) {
+    header += `\n(Dica: Para ler as próximas linhas, use linha_inicio=${end + 1})`;
+  }
+
+  return `${header}\n\n${selected.join('\n')}`;
+}
+
+/**
+ * Varre e lista os arquivos do projeto com filtros
+ */
+function listProjectFiles(subPasta = '', extensao = '', recursivo = null) {
+  const targetDir = subPasta ? resolveSafePath(subPasta) : defaultProjectRoot;
+  if (!fs.existsSync(targetDir) || !fs.statSync(targetDir).isDirectory()) {
+    throw new Error(`Diretório não encontrado: ${subPasta || 'raiz'}`);
+  }
+
+  const isRoot = path.normalize(targetDir) === path.normalize(defaultProjectRoot);
+  const shouldRecurse = recursivo !== null ? Boolean(recursivo) : !isRoot;
+  const extFilter = extensao ? extensao.toLowerCase() : '';
+
+  const results = [];
+
+  function scan(dir, depth = 0) {
+    if (results.length >= 250) return;
+    if (depth > 8) return;
+
+    let entries = [];
+    try {
+      entries = fs.readdirSync(dir, { withFileTypes: true });
+    } catch (e) {
+      return;
+    }
+
+    for (const ent of entries) {
+      if (results.length >= 250) break;
+      const fullPath = path.join(dir, ent.name);
+      const name = ent.name;
+
+      if (ent.isDirectory()) {
+        if (IGNORED_DIRS.has(name) || name.startsWith('.')) continue;
+        const relDir = path.relative(defaultProjectRoot, fullPath).replace(/\\/g, '/');
+        results.push(`📁 ${relDir}/`);
+        if (shouldRecurse) {
+          scan(fullPath, depth + 1);
+        }
+      } else if (ent.isFile()) {
+        if (BLOCKED_FILES.has(name.toLowerCase()) || name.endsWith('.pem') || name.endsWith('.key')) continue;
+        if (extFilter && !name.toLowerCase().endsWith(extFilter)) continue;
+        const relFile = path.relative(defaultProjectRoot, fullPath).replace(/\\/g, '/');
+        results.push(`📄 ${relFile}`);
+      }
+    }
+  }
+
+  scan(targetDir);
+  return results;
+}
+
+/**
+ * Busca por termo em arquivos de código (grep)
+ */
+function searchInCode(termo, subPasta = '', extensao = '.php') {
+  if (!termo || typeof termo !== 'string' || termo.trim().length === 0) {
+    throw new Error('Informe um termo de busca válido.');
+  }
+
+  const targetDir = subPasta ? resolveSafePath(subPasta) : defaultProjectRoot;
+  if (!fs.existsSync(targetDir) || !fs.statSync(targetDir).isDirectory()) {
+    throw new Error(`Diretório de busca não encontrado: ${subPasta || 'raiz'}`);
+  }
+
+  const extFilter = extensao ? extensao.toLowerCase() : '';
+  const termLower = termo.toLowerCase();
+  const results = [];
+
+  function scanSearch(dir, depth = 0) {
+    if (results.length >= 60) return;
+    if (depth > 8) return;
+
+    let entries = [];
+    try {
+      entries = fs.readdirSync(dir, { withFileTypes: true });
+    } catch (e) {
+      return;
+    }
+
+    for (const ent of entries) {
+      if (results.length >= 60) break;
+      const fullPath = path.join(dir, ent.name);
+      const name = ent.name;
+
+      if (ent.isDirectory()) {
+        if (IGNORED_DIRS.has(name) || name.startsWith('.')) continue;
+        scanSearch(fullPath, depth + 1);
+      } else if (ent.isFile()) {
+        if (BLOCKED_FILES.has(name.toLowerCase()) || name.endsWith('.pem') || name.endsWith('.key')) continue;
+        if (extFilter && !name.toLowerCase().endsWith(extFilter)) continue;
+
+        try {
+          const content = fs.readFileSync(fullPath, 'utf8');
+          if (!content.toLowerCase().includes(termLower)) continue;
+
+          const lines = content.split(/\r?\n/);
+          const relFile = path.relative(defaultProjectRoot, fullPath).replace(/\\/g, '/');
+
+          for (let i = 0; i < lines.length; i++) {
+            if (results.length >= 60) break;
+            if (lines[i].toLowerCase().includes(termLower)) {
+              results.push(`- ${relFile}:${i + 1} -> ${lines[i].trim().slice(0, 160)}`);
+            }
+          }
+        } catch (readErr) {}
+      }
+    }
+  }
+
+  scanSearch(targetDir);
+  return results;
+}
 
 /**
  * Módulo MCP (Model Context Protocol) Nativo com Transporte SSE
@@ -57,7 +252,7 @@ export function initMcp(app, gateway) {
   /**
    * Executa a chamada do subagente com suporte a streaming contínuo e múltiplos fallbacks
    */
-  async function runSubagent({ prompt, modelo, system_prompt, userKey, progressCallback, abortSignal }) {
+  async function runSubagent({ prompt, modelo, system_prompt, arquivos, userKey, progressCallback, abortSignal }) {
     let rawModel = modelo;
     if (!rawModel) {
       try {
@@ -69,10 +264,35 @@ export function initMcp(app, gateway) {
     }
     if (!rawModel) rawModel = 'gemini-3.8-flash-medium';
 
+    // Se foram informados arquivos do projeto para o subagente analisar:
+    let fileContentsContext = '';
+    if (Array.isArray(arquivos) && arquivos.length > 0) {
+      for (const filePath of arquivos) {
+        try {
+          const safePath = resolveSafePath(filePath);
+          if (fs.existsSync(safePath) && fs.statSync(safePath).isFile()) {
+            const content = fs.readFileSync(safePath, 'utf8');
+            const truncated = content.length > 150000
+              ? content.slice(0, 150000) + '\n... [conteúdo truncado para manter performance]'
+              : content;
+            fileContentsContext += `\n\n=== ARQUIVO DO PROJETO: ${filePath} ===\n${truncated}\n=== FIM DO ARQUIVO ===`;
+          } else {
+            fileContentsContext += `\n\n=== AVISO: Arquivo "${filePath}" não encontrado no projeto. ===`;
+          }
+        } catch (fErr) {
+          fileContentsContext += `\n\n=== ERRO AO CARREGAR ARQUIVO "${filePath}": ${fErr.message} ===`;
+        }
+      }
+    }
+
+    const finalPrompt = fileContentsContext
+      ? `${prompt}\n\n[ARQUIVOS DO PROJETO CARREGADOS DO DISCO PARA ANÁLISE]:${fileContentsContext}`
+      : prompt;
+
     const incomingContents = [
       {
         role: 'user',
-        parts: [{ text: prompt }]
+        parts: [{ text: finalPrompt }]
       }
     ];
 
@@ -89,7 +309,7 @@ export function initMcp(app, gateway) {
     if (providerId && providerId !== 2) {
       const incomingMsgs = [
         ...(finalSystemInstruction ? [{ role: 'system', content: finalSystemInstruction }] : []),
-        { role: 'user', content: prompt }
+        { role: 'user', content: finalPrompt }
       ];
       const extResult = await executeExternalProvider(providerId, targetEngine, incomingMsgs, finalSystemInstruction, []);
       replyText = extResult.replyText;
@@ -154,7 +374,7 @@ export function initMcp(app, gateway) {
     }
 
     // Debitar cota
-    const inputTokens = Math.ceil((prompt.length + (finalSystemInstruction ? finalSystemInstruction.length : 0)) / 4);
+    const inputTokens = Math.ceil((finalPrompt.length + (finalSystemInstruction ? finalSystemInstruction.length : 0)) / 4);
     const outputTokens = Math.ceil(replyText.length / 4);
     logUsage(userKey, rawModel, inputTokens, outputTokens, account?.id || null, modelMultiplier);
 
@@ -210,13 +430,14 @@ export function initMcp(app, gateway) {
     // -------------------------------------------------------------
     server.tool(
       'executar_subagente',
-      'Executa uma tarefa ou raciocínio complexo delegando para um subagente na API do Painel (ex: Claude Opus Thinking, Claude Sonnet, Gemini 3.8, etc.)',
+      'Executa uma tarefa ou raciocínio complexo delegando para um subagente na API do Painel (ex: Claude Opus Thinking, Claude Sonnet, Gemini 3.8, etc.). Aceita uma lista de arquivos do projeto para ler e entender o código antes de responder!',
       {
         prompt: z.string().describe('Instrução clara e detalhada para o subagente executar'),
         modelo: z.string().optional().describe('Modelo da API para executar o subagente. Exemplos: claude-opus-5.5, gemini-3.7-flash-medium. Padrão: modelo padrão ativo'),
-        system_prompt: z.string().optional().describe('Instrução de persona ou diretrizes de sistema para guiar o subagente')
+        system_prompt: z.string().optional().describe('Instrução de persona ou diretrizes de sistema para guiar o subagente'),
+        arquivos: z.array(z.string()).optional().describe('Lista de arquivos do projeto que o subagente deve carregar e analisar do disco (ex: ["app/Models/Fidelidade.php", "database/migrations/2026_create_fidelidade.php"])')
       },
-      async ({ prompt, modelo, system_prompt }, extra) => {
+      async ({ prompt, modelo, system_prompt, arquivos }, extra) => {
         let progressHeartbeatTimer = null;
         try {
           const progressToken =
@@ -283,6 +504,7 @@ export function initMcp(app, gateway) {
             prompt,
             modelo,
             system_prompt,
+            arquivos,
             userKey,
             progressCallback,
             abortSignal: extra?.signal
@@ -377,6 +599,92 @@ export function initMcp(app, gateway) {
           return {
             isError: true,
             content: [{ type: 'text', text: `Erro ao consultar saldo: ${err.message}` }]
+          };
+        }
+      }
+    );
+
+    // -------------------------------------------------------------
+    // TOOL 4: Ler Código do Arquivo (Com numeração de linhas)
+    // -------------------------------------------------------------
+    server.tool(
+      'ler_codigo_arquivo',
+      'Lê o código-fonte de um arquivo do projeto no disco com numeração de linhas. Use para inspecionar classes, models, migrations ou controllers.',
+      {
+        caminho: z.string().describe('Caminho relativo do arquivo no projeto (ex: "app/Models/Fidelidade.php", "admin/accounts.php", "database.sql")'),
+        linha_inicio: z.number().optional().describe('Linha inicial (padrão: 1)'),
+        linha_fim: z.number().optional().describe('Linha final (opcional, padrão: exibe até 500 linhas)')
+      },
+      async ({ caminho, linha_inicio, linha_fim }) => {
+        try {
+          const content = readCodeFile(caminho, linha_inicio, linha_fim);
+          return {
+            content: [{ type: 'text', text: content }]
+          };
+        } catch (err) {
+          return {
+            isError: true,
+            content: [{ type: 'text', text: `Erro ao ler arquivo "${caminho}": ${err.message}` }]
+          };
+        }
+      }
+    );
+
+    // -------------------------------------------------------------
+    // TOOL 5: Listar Estrutura de Arquivos do Projeto
+    // -------------------------------------------------------------
+    server.tool(
+      'listar_arquivos_projeto',
+      'Lista pastas e arquivos do projeto para descobrir onde estão localizados os módulos, migrations e classes.',
+      {
+        pasta: z.string().optional().describe('Subpasta para listar (ex: "app/Models", "database", "admin"). Vazio lista a raiz.'),
+        extensao: z.string().optional().describe('Filtrar por extensão (ex: ".php", ".js", ".sql")'),
+        recursivo: z.boolean().optional().describe('Se deve listar recursivamente (padrão: true para subpastas, false para raiz)')
+      },
+      async ({ pasta, extensao, recursivo }) => {
+        try {
+          const files = listProjectFiles(pasta, extensao, recursivo);
+          return {
+            content: [{
+              type: 'text',
+              text: `Arquivos encontrados (${files.length} itens):\n\n${files.join('\n') || 'Nenhum arquivo encontrado com esses filtros.'}`
+            }]
+          };
+        } catch (err) {
+          return {
+            isError: true,
+            content: [{ type: 'text', text: `Erro ao listar arquivos: ${err.message}` }]
+          };
+        }
+      }
+    );
+
+    // -------------------------------------------------------------
+    // TOOL 6: Buscar no Código (Grep)
+    // -------------------------------------------------------------
+    server.tool(
+      'buscar_no_codigo',
+      'Pesquisa termos, nomes de tabelas, classes ou métodos em todo o código-fonte do projeto.',
+      {
+        termo: z.string().describe('Termo, tabela ou nome de classe a buscar (ex: "Fidelidade", "ordens_servico", "calculatePoints")'),
+        pasta: z.string().optional().describe('Subpasta onde buscar (ex: "app", "admin"). Vazio busca no projeto todo.'),
+        extensao: z.string().optional().describe('Extensão dos arquivos (padrão: ".php")')
+      },
+      async ({ termo, pasta, extensao }) => {
+        try {
+          const results = searchInCode(termo, pasta, extensao);
+          return {
+            content: [{
+              type: 'text',
+              text: results.length > 0
+                ? `Ocorrências de "${termo}" (${results.length} resultados encontrados):\n\n${results.join('\n')}`
+                : `Nenhuma ocorrência encontrada para o termo "${termo}".`
+            }]
+          };
+        } catch (err) {
+          return {
+            isError: true,
+            content: [{ type: 'text', text: `Erro ao buscar no código: ${err.message}` }]
           };
         }
       }
@@ -529,13 +837,18 @@ export function initMcp(app, gateway) {
             tools: [
               {
                 name: 'executar_subagente',
-                description: 'Executa uma tarefa ou raciocínio complexo delegando para um subagente na API do Painel',
+                description: 'Executa uma tarefa ou raciocínio complexo delegando para um subagente na API do Painel (aceita lista de arquivos do projeto para analisar)',
                 inputSchema: {
                   type: 'object',
                   properties: {
                     prompt: { type: 'string', description: 'Instrução clara para o subagente executar' },
                     modelo: { type: 'string', description: `Modelo da API. Ativos: ${listStr}` },
-                    system_prompt: { type: 'string', description: 'Instruções de sistema opcionais' }
+                    system_prompt: { type: 'string', description: 'Instruções de sistema opcionais' },
+                    arquivos: {
+                      type: 'array',
+                      items: { type: 'string' },
+                      description: 'Lista de arquivos do projeto para o subagente carregar do disco e entender (ex: ["app/Models/Fidelidade.php"])'
+                    }
                   },
                   required: ['prompt']
                 }
@@ -549,6 +862,44 @@ export function initMcp(app, gateway) {
                 name: 'consultar_saldo_api',
                 description: 'Consulta o saldo de tokens e cotas disponíveis na sua conta do painel',
                 inputSchema: { type: 'object', properties: {} }
+              },
+              {
+                name: 'ler_codigo_arquivo',
+                description: 'Lê o código-fonte de um arquivo do projeto no disco com numeração de linhas',
+                inputSchema: {
+                  type: 'object',
+                  properties: {
+                    caminho: { type: 'string', description: 'Caminho do arquivo (ex: "app/Models/Fidelidade.php")' },
+                    linha_inicio: { type: 'number', description: 'Linha inicial (padrão: 1)' },
+                    linha_fim: { type: 'number', description: 'Linha final (opcional)' }
+                  },
+                  required: ['caminho']
+                }
+              },
+              {
+                name: 'listar_arquivos_projeto',
+                description: 'Lista arquivos e pastas do projeto para descobrir onde estão as classes e migrações',
+                inputSchema: {
+                  type: 'object',
+                  properties: {
+                    pasta: { type: 'string', description: 'Subpasta para listar (ex: "app/Models")' },
+                    extensao: { type: 'string', description: 'Filtrar por extensão (ex: ".php")' },
+                    recursivo: { type: 'boolean', description: 'Listar recursivamente' }
+                  }
+                }
+              },
+              {
+                name: 'buscar_no_codigo',
+                description: 'Busca textual rápida (grep) por termos, tabelas, métodos ou classes no projeto',
+                inputSchema: {
+                  type: 'object',
+                  properties: {
+                    termo: { type: 'string', description: 'Texto ou nome da classe/tabela a buscar' },
+                    pasta: { type: 'string', description: 'Subpasta onde buscar' },
+                    extensao: { type: 'string', description: 'Extensão dos arquivos (padrão: ".php")' }
+                  },
+                  required: ['termo']
+                }
               }
             ]
           }
@@ -597,12 +948,87 @@ export function initMcp(app, gateway) {
         });
       }
 
+      if (toolName === 'ler_codigo_arquivo') {
+        try {
+          const content = readCodeFile(args.caminho, args.linha_inicio, args.linha_fim);
+          return res.status(200).json({
+            jsonrpc: '2.0',
+            id: msgId,
+            result: {
+              content: [{ type: 'text', text: content }]
+            }
+          });
+        } catch (err) {
+          return res.status(200).json({
+            jsonrpc: '2.0',
+            id: msgId,
+            result: {
+              isError: true,
+              content: [{ type: 'text', text: `Erro ao ler arquivo: ${err.message}` }]
+            }
+          });
+        }
+      }
+
+      if (toolName === 'listar_arquivos_projeto') {
+        try {
+          const files = listProjectFiles(args.pasta, args.extensao, args.recursivo);
+          return res.status(200).json({
+            jsonrpc: '2.0',
+            id: msgId,
+            result: {
+              content: [{
+                type: 'text',
+                text: `Arquivos encontrados (${files.length} itens):\n\n${files.join('\n') || 'Nenhum arquivo encontrado.'}`
+              }]
+            }
+          });
+        } catch (err) {
+          return res.status(200).json({
+            jsonrpc: '2.0',
+            id: msgId,
+            result: {
+              isError: true,
+              content: [{ type: 'text', text: `Erro ao listar arquivos: ${err.message}` }]
+            }
+          });
+        }
+      }
+
+      if (toolName === 'buscar_no_codigo') {
+        try {
+          const results = searchInCode(args.termo, args.pasta, args.extensao);
+          return res.status(200).json({
+            jsonrpc: '2.0',
+            id: msgId,
+            result: {
+              content: [{
+                type: 'text',
+                text: results.length > 0
+                  ? `Ocorrências de "${args.termo}" (${results.length} resultados):\n\n${results.join('\n')}`
+                  : `Nenhuma ocorrência encontrada para o termo "${args.termo}".`
+              }]
+            }
+          });
+        } catch (err) {
+          return res.status(200).json({
+            jsonrpc: '2.0',
+            id: msgId,
+            result: {
+              isError: true,
+              content: [{ type: 'text', text: `Erro ao buscar no código: ${err.message}` }]
+            }
+          });
+        }
+      }
+
       if (toolName === 'executar_subagente') {
         try {
           const replyText = await runSubagent({
             prompt: args.prompt || '',
             modelo: args.modelo,
             system_prompt: args.system_prompt,
+            arquivos: args.arquivos,
             userKey
           });
 
