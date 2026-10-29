@@ -316,54 +316,28 @@ export function initMcp(app, gateway) {
 
   // -------------------------------------------------------------
   // Resolve o modo LOCAL/REMOTO a partir do painel SuperAdmin (tabela `settings`),
-  // com fallback para variáveis de ambiente. Só liga a leitura de disco se o
-  // caminho configurado existir NESTA máquina (a VPS continua remota automaticamente).
+  // com fallback para variáveis de ambiente.
   // -------------------------------------------------------------
   async function refreshMcpMode() {
     let toggle = ENV_LOCAL_FALLBACK;
-    let confPath = defaultProjectRoot;
     try {
       const [rows] = await pool.query(
-        "SELECT setting_key, setting_value FROM settings WHERE setting_key IN ('mcp_local_mode', 'mcp_workspace_dir')"
+        "SELECT setting_value FROM settings WHERE setting_key = 'mcp_local_mode'"
       );
-      for (const r of rows) {
-        if (r.setting_key === 'mcp_local_mode') {
-          toggle = /^(1|true|on|yes)$/i.test(String(r.setting_value || '').trim());
-        } else if (r.setting_key === 'mcp_workspace_dir' && String(r.setting_value || '').trim()) {
-          confPath = path.resolve(String(r.setting_value).trim());
-        }
+      if (rows.length > 0) {
+        toggle = /^(1|true|on|yes)$/i.test(String(rows[0].setting_value || '').trim());
       }
     } catch (e) {
       // settings indisponível → mantém fallback de ambiente
     }
 
-    let pathOk = false;
-    try {
-      pathOk = fs.existsSync(confPath) && fs.statSync(confPath).isDirectory();
-    } catch (e) {
-      pathOk = false;
-    }
-
-    // Se o caminho configurado não existir, mas o defaultProjectRoot existir, usa defaultProjectRoot como base
-    if (!pathOk) {
-      try {
-        if (fs.existsSync(defaultProjectRoot) && fs.statSync(defaultProjectRoot).isDirectory()) {
-          confPath = defaultProjectRoot;
-          pathOk = true;
-        }
-      } catch (e) {}
-    }
-
     const prev = localModeEnabled;
-    const prevRoot = projectRoot;
-    localModeEnabled = Boolean(toggle && pathOk);
-    projectRoot = localModeEnabled ? confPath : defaultProjectRoot;
+    localModeEnabled = Boolean(toggle);
+    projectRoot = defaultProjectRoot;
 
-    if (prev !== localModeEnabled || prevRoot !== projectRoot) {
+    if (prev !== localModeEnabled) {
       if (localModeEnabled) {
-        console.log(`📂 MCP Modo: LOCAL — leitura de disco ATIVA em ${projectRoot}`);
-      } else if (toggle && !pathOk) {
-        console.log(`📂 MCP Modo: REMOTO/VPS — toggle local ligado, mas o caminho "${confPath}" não existe nesta máquina. Clientes devem usar "conteudos".`);
+        console.log(`📂 MCP Modo: LOCAL — leitura de disco ATIVA (Acesso livre a qualquer diretório da máquina)`);
       } else {
         console.log(`📂 MCP Modo: REMOTO/VPS — leitura de disco desligada. Clientes devem enviar código via "conteudos".`);
       }
@@ -1456,5 +1430,5 @@ export function initMcp(app, gateway) {
   });
 
   console.log(`🤖 MCP Server (SSE + OAuth Auto-Handshake) inicializado e disponível em /mcp`);
-  console.log(`📂 MCP Modo: ${localModeEnabled ? 'LOCAL — lendo disco em ' + projectRoot : 'REMOTO/VPS — clientes usam "conteudos" (ligue no SuperAdmin: toggle + caminho, ou MCP_LOCAL=true)'} [revalidado a cada 30s]`);
+  console.log(`📂 MCP Modo: ${localModeEnabled ? 'LOCAL — leitura de disco ATIVA (Acesso livre a qualquer diretório da máquina)' : 'REMOTO/VPS — leitura de disco desligada (clientes usam "conteudos")'} [revalidado a cada 30s]`);
 }
