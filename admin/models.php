@@ -372,6 +372,7 @@ require_once __DIR__ . '/includes/header.php';
                         </td>
                         <td class="py-2.5 px-3 font-sans text-center">
                             <form method="POST" action="models.php" class="inline">
+                                <?= csrf_field() ?>
                                 <input type="hidden" name="action" value="toggle_model_status">
                                 <input type="hidden" name="model_id" value="<?= $m['id'] ?>">
                                 <input type="hidden" name="current_status" value="<?= $m['status'] ?>">
@@ -392,6 +393,7 @@ require_once __DIR__ . '/includes/header.php';
                                     Editar
                                 </button>
                                 <form method="POST" action="models.php" onsubmit="return confirm('Excluir este modelo?');" class="inline">
+                                    <?= csrf_field() ?>
                                     <input type="hidden" name="action" value="delete_model">
                                     <input type="hidden" name="model_id" value="<?= $m['id'] ?>">
                                     <button type="submit" class="text-[11px] px-2 py-1 text-red-400 hover:text-red-300 font-semibold">Excluir</button>
@@ -423,6 +425,7 @@ require_once __DIR__ . '/includes/header.php';
         </div>
 
         <form method="POST" action="models.php" class="flex flex-col flex-1 min-h-0 text-xs">
+            <?= csrf_field() ?>
             <input type="hidden" name="action" value="save_model">
             <input type="hidden" name="model_id" id="model_id" value="0">
 
@@ -593,6 +596,7 @@ require_once __DIR__ . '/includes/header.php';
         </div>
 
         <form method="POST" action="models.php" class="space-y-4 text-xs" onsubmit="this.querySelector('button[type=submit]').innerHTML='<i class=\'fa-solid fa-spinner fa-spin mr-1\'></i> Processando...';">
+            <?= csrf_field() ?>
             <input type="hidden" name="action" value="sync_provider_models">
 
             <div>

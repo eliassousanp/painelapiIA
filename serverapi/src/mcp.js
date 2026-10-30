@@ -615,64 +615,88 @@ export function initMcp(app, gateway) {
     let replyText = '';
     let account = null;
 
-    if (providerId && providerId !== 2) {
-      const incomingMsgs = [
-        ...(finalSystemInstruction ? [{ role: 'system', content: finalSystemInstruction }] : []),
-        { role: 'user', content: finalPrompt }
-      ];
-      const extResult = await withRetry(
-        () => executeExternalProvider(providerId, targetEngine, incomingMsgs, finalSystemInstruction, []),
-        { label: `provider externo (${rawModel})` }
-      );
-      replyText = extResult.replyText;
-    } else {
-      // 1. Tenta executar via streaming contínuo para manter os dados fluindo em gerações longas
-      let streamSucceeded = false;
-      if (typeof executeWithFallbackStream === 'function') {
-        try {
-          let streamedText = '';
-          const streamRes = await executeWithFallbackStream(
-            targetEngine,
-            incomingContents,
-            finalSystemInstruction,
-            rawModel,
-            genConfig,
-            (tokenChunk, toolCall, meta) => {
-              if (tokenChunk) {
-                streamedText += tokenChunk;
-                if (typeof progressCallback === 'function') {
-                  progressCallback({ type: 'text', length: streamedText.length, chunk: tokenChunk });
+    try {
+      if (providerId && providerId !== 2) {
+        const incomingMsgs = [
+          ...(finalSystemInstruction ? [{ role: 'system', content: finalSystemInstruction }] : []),
+          { role: 'user', content: finalPrompt }
+        ];
+        const extResult = await withRetry(
+          () => executeExternalProvider(providerId, targetEngine, incomingMsgs, finalSystemInstruction, []),
+          { label: `provider externo (${rawModel})` }
+        );
+        replyText = extResult.replyText;
+      } else {
+        // 1. Tenta executar via streaming contínuo para manter os dados fluindo em gerações longas
+        let streamSucceeded = false;
+        if (typeof executeWithFallbackStream === 'function') {
+          try {
+            let streamedText = '';
+            const streamRes = await executeWithFallbackStream(
+              targetEngine,
+              incomingContents,
+              finalSystemInstruction,
+              rawModel,
+              genConfig,
+              (tokenChunk, toolCall, meta) => {
+                if (tokenChunk) {
+                  streamedText += tokenChunk;
+                  if (typeof progressCallback === 'function') {
+                    progressCallback({ type: 'text', length: streamedText.length, chunk: tokenChunk });
+                  }
+                } else if (meta?.thinking) {
+                  if (typeof progressCallback === 'function') {
+                    progressCallback({ type: 'thinking', chunk: meta.thought });
+                  }
                 }
-              } else if (meta?.thinking) {
-                if (typeof progressCallback === 'function') {
-                  progressCallback({ type: 'thinking', chunk: meta.thought });
-                }
-              }
-            },
-            abortSignal
+              },
+              abortSignal
+            );
+            account = streamRes.account;
+            replyText = streamRes.googleResp?.replyText || streamedText;
+            streamSucceeded = true;
+          } catch (streamErr) {
+            console.warn('[MCP Subagente] Fallback de streaming para execução direta:', streamErr.message);
+          }
+        }
+
+        // 2. Se o streaming não foi usado ou falhou, usa a execução padrão (com timeout estendido de 300s)
+        if (!streamSucceeded) {
+          const { googleResp, account: acc } = await withRetry(
+            () => executeWithFallback(
+              targetEngine,
+              incomingContents,
+              finalSystemInstruction,
+              rawModel,
+              genConfig
+            ),
+            { label: `execução direta (${rawModel})` }
           );
-          account = streamRes.account;
-          replyText = streamRes.googleResp?.replyText || streamedText;
-          streamSucceeded = true;
-        } catch (streamErr) {
-          console.warn('[MCP Subagente] Fallback de streaming para execução direta:', streamErr.message);
+          account = acc;
+
+          const actualResp = googleResp?.response || googleResp;
+          const candidates = actualResp?.candidates || [];
+          if (candidates.length > 0 && candidates[0].content?.parts) {
+            for (const p of candidates[0].content.parts) {
+              if (p.thought) continue;
+              if (p.text) replyText += p.text;
+            }
+          }
         }
       }
-
-      // 2. Se o streaming não foi usado ou falhou, usa a execução padrão (com timeout estendido de 300s)
-      if (!streamSucceeded) {
-        const { googleResp, account: acc } = await withRetry(
-          () => executeWithFallback(
-            targetEngine,
-            incomingContents,
-            finalSystemInstruction,
-            rawModel,
-            genConfig
-          ),
-          { label: `execução direta (${rawModel})` }
+    } catch (primaryErr) {
+      // FALLBACK DE SEGURANÇA TOTAL PARA O GEMINI 3.8
+      // Se o modelo principal (Opus 4.6, Claude, provedor externo) esgotou tokens ou falhou:
+      console.warn(`[MCP Subagente] ⚠️ Modelo principal "${rawModel}" (${targetEngine}) falhou (${primaryErr.message}). Redirecionando automaticamente para "gemini-3.8-flash-medium"...`);
+      try {
+        const { googleResp, account: acc } = await executeWithFallback(
+          'gemini-3.8-flash-medium',
+          incomingContents,
+          finalSystemInstruction,
+          'gemini-3.8-flash-medium',
+          genConfig
         );
         account = acc;
-
         const actualResp = googleResp?.response || googleResp;
         const candidates = actualResp?.candidates || [];
         if (candidates.length > 0 && candidates[0].content?.parts) {
@@ -681,6 +705,9 @@ export function initMcp(app, gateway) {
             if (p.text) replyText += p.text;
           }
         }
+      } catch (fbErr) {
+        console.error('[MCP Subagente] Fallback de emergência para Gemini também falhou:', fbErr.message);
+        throw primaryErr;
       }
     }
 

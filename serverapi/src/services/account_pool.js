@@ -392,17 +392,19 @@ class AntigravityAccountPool {
 
     // Fallback Inteligente entre Modelos em Cascata: Se o modelo solicitado estiver com cota esgotada no pool
     if (targetEngine.includes('opus')) {
-      const nextFallback = 'claude-sonnet-4-6';
-      console.warn(`[Model Auto-Fallback] Cota de "${targetEngine}" esgotada no pool. Cascata inteligente ➔ Tentando "${nextFallback}"...`);
-      return await this.executeWithFallback(nextFallback, contents, systemInstruction, rawModel, customConfig);
+      try {
+        console.warn(`[Model Auto-Fallback] Cota de "${targetEngine}" esgotada no pool. Tentando "claude-sonnet-4-6"...`);
+        return await this.executeWithFallback('claude-sonnet-4-6', contents, systemInstruction, rawModel, customConfig);
+      } catch (e1) {
+        console.warn(`[Model Auto-Fallback] Claude Sonnet indisponível (${e1.message}). Redirecionando com segurança para "gemini-3.8-flash-medium"...`);
+        return await this.executeWithFallback('gemini-3.8-flash-medium', contents, systemInstruction, rawModel, customConfig);
+      }
     } else if (targetEngine.includes('sonnet') || targetEngine.includes('claude')) {
-      const nextFallback = 'gemini-3.8-flash-high';
-      console.warn(`[Model Auto-Fallback] Cota de "${targetEngine}" esgotada no pool. Cascata inteligente ➔ Tentando "${nextFallback}"...`);
-      return await this.executeWithFallback(nextFallback, contents, systemInstruction, rawModel, customConfig);
-    } else if (targetEngine.includes('flash-high')) {
-      const nextFallback = 'gemini-3.8-flash-medium';
-      console.warn(`[Model Auto-Fallback] Cota de "${targetEngine}" esgotada no pool. Cascata final ➔ Tentando "${nextFallback}"...`);
-      return await this.executeWithFallback(nextFallback, contents, systemInstruction, rawModel, customConfig);
+      console.warn(`[Model Auto-Fallback] Cota de "${targetEngine}" esgotada no pool. Redirecionando com segurança para "gemini-3.8-flash-medium"...`);
+      return await this.executeWithFallback('gemini-3.8-flash-medium', contents, systemInstruction, rawModel, customConfig);
+    } else if (targetEngine !== 'gemini-3.8-flash-medium') {
+      console.warn(`[Model Auto-Fallback] Cota de "${targetEngine}" esgotada no pool. Redirecionando para "gemini-3.8-flash-medium"...`);
+      return await this.executeWithFallback('gemini-3.8-flash-medium', contents, systemInstruction, rawModel, customConfig);
     }
 
     throw lastError || new Error('Todas as contas do pool estão ocupadas ou com limite de taxa no momento. Tente novamente em instantes.');
@@ -464,17 +466,19 @@ class AntigravityAccountPool {
 
     // Fallback Inteligente entre Modelos no Streaming em Cascata
     if (targetEngine.includes('opus')) {
-      const nextFallback = 'claude-sonnet-4-6';
-      console.warn(`[Model Stream Auto-Fallback] Cota de "${targetEngine}" esgotada no streaming. Cascata inteligente ➔ Tentando "${nextFallback}"...`);
-      return await this.executeWithFallbackStream(nextFallback, contents, systemInstruction, requestedModel, customConfig, onChunk, abortSignal);
+      try {
+        console.warn(`[Model Stream Auto-Fallback] Cota de "${targetEngine}" esgotada no streaming. Tentando "claude-sonnet-4-6"...`);
+        return await this.executeWithFallbackStream('claude-sonnet-4-6', contents, systemInstruction, requestedModel, customConfig, onChunk, abortSignal);
+      } catch (e1) {
+        console.warn(`[Model Stream Auto-Fallback] Claude Sonnet indisponível (${e1.message}). Redirecionando streaming para "gemini-3.8-flash-medium"...`);
+        return await this.executeWithFallbackStream('gemini-3.8-flash-medium', contents, systemInstruction, requestedModel, customConfig, onChunk, abortSignal);
+      }
     } else if (targetEngine.includes('sonnet') || targetEngine.includes('claude')) {
-      const nextFallback = 'gemini-3.8-flash-high';
-      console.warn(`[Model Stream Auto-Fallback] Cota de "${targetEngine}" esgotada no streaming. Cascata inteligente ➔ Tentando "${nextFallback}"...`);
-      return await this.executeWithFallbackStream(nextFallback, contents, systemInstruction, requestedModel, customConfig, onChunk, abortSignal);
-    } else if (targetEngine.includes('flash-high')) {
-      const nextFallback = 'gemini-3.8-flash-medium';
-      console.warn(`[Model Stream Auto-Fallback] Cota de "${targetEngine}" esgotada no streaming. Cascata final ➔ Tentando "${nextFallback}"...`);
-      return await this.executeWithFallbackStream(nextFallback, contents, systemInstruction, requestedModel, customConfig, onChunk, abortSignal);
+      console.warn(`[Model Stream Auto-Fallback] Cota de "${targetEngine}" esgotada no streaming. Redirecionando para "gemini-3.8-flash-medium"...`);
+      return await this.executeWithFallbackStream('gemini-3.8-flash-medium', contents, systemInstruction, requestedModel, customConfig, onChunk, abortSignal);
+    } else if (targetEngine !== 'gemini-3.8-flash-medium') {
+      console.warn(`[Model Stream Auto-Fallback] Cota de "${targetEngine}" esgotada no streaming. Redirecionando para "gemini-3.8-flash-medium"...`);
+      return await this.executeWithFallbackStream('gemini-3.8-flash-medium', contents, systemInstruction, requestedModel, customConfig, onChunk, abortSignal);
     }
 
     throw lastError || new Error('Todas as contas do pool estão com limite de taxa no momento.');
