@@ -444,6 +444,20 @@ export function initMcp(app, gateway) {
     };
     subagentJobs.set(jobId, job);
 
+    const timeStr = new Date().toLocaleTimeString('pt-BR');
+    const promptPreview = (args?.prompt || '').trim().slice(0, 150).replace(/\r?\n/g, ' ');
+    const promptEllipsis = (args?.prompt || '').length > 150 ? '...' : '';
+    const arquivosCount = (args?.arquivos?.length || 0) + (args?.conteudos?.length || 0);
+
+    console.log(`\n┌─────────────────────────────────────────────────────────────────┐`);
+    console.log(`│ 📥 [MCP TASK RECEBIDA] [${timeStr}] Job: ${jobId}`);
+    console.log(`│ 🧠 Modelo solicitado: ${args?.modelo || '(padrão ativo)'}`);
+    if (arquivosCount > 0) {
+      console.log(`│ 📁 Arquivos anexados: ${arquivosCount} item(ns)`);
+    }
+    console.log(`│ 📝 Tarefa: "${promptPreview}${promptEllipsis}"`);
+    console.log(`└─────────────────────────────────────────────────────────────────┘`);
+
     // NÃO dá await: a chamada MCP retorna já com o job_id.
     runSubagent({
       prompt: args?.prompt || '',
@@ -453,16 +467,21 @@ export function initMcp(app, gateway) {
       conteudos: args?.conteudos,
       max_tokens: args?.max_tokens,
       temperature: args?.temperature,
-      userKey
+      userKey,
+      jobId
     }).then((replyText) => {
       job.status = 'done';
       job.resultText = replyText || '';
       job.finishedAt = Date.now();
+      const duration = ((Date.now() - job.startedAt) / 1000).toFixed(1);
+      const chars = (replyText || '').length;
+      console.log(`✅ [MCP TASK CONCLUÍDA] Job: ${jobId} | Duração: ${duration}s | Resposta gerada: ${chars} caracteres\n`);
     }).catch((err) => {
       job.status = 'error';
       job.errorText = err?.message || String(err);
       job.finishedAt = Date.now();
-      console.error('[MCP Subagente Job Error]:', job.errorText);
+      const duration = ((Date.now() - job.startedAt) / 1000).toFixed(1);
+      console.error(`❌ [MCP TASK ERRO] Job: ${jobId} | Duração: ${duration}s | Erro: ${job.errorText}\n`);
     });
 
     return job;
@@ -530,7 +549,7 @@ export function initMcp(app, gateway) {
   /**
    * Executa a chamada do subagente com suporte a streaming contínuo e múltiplos fallbacks
    */
-  async function runSubagent({ prompt, modelo, system_prompt, arquivos, conteudos, max_tokens, temperature, userKey, progressCallback, abortSignal }) {
+  async function runSubagent({ prompt, modelo, system_prompt, arquivos, conteudos, max_tokens, temperature, userKey, progressCallback, abortSignal, jobId }) {
     // Revalida o modo MCP (painel SuperAdmin / .env) na hora para garantir sincronia imediata
     await refreshMcpMode().catch(() => {});
 
@@ -614,6 +633,8 @@ export function initMcp(app, gateway) {
 
     let replyText = '';
     let account = null;
+
+    console.log(`⚡ [MCP PROCESSANDO] Job: ${jobId || 'subagente'} | Motor: ${targetEngine} (Provedor #${providerId}) | Limite: ${genConfig.maxOutputTokens} tokens`);
 
     try {
       if (providerId && providerId !== 2) {
@@ -904,6 +925,7 @@ export function initMcp(app, gateway) {
         if (!localModeEnabled) {
           return { isError: true, content: [{ type: 'text', text: DISK_OFF_MSG }] };
         }
+        console.log(`📖 [MCP TOOL] Ler Arquivo: "${caminho}" (linhas ${linha_inicio || 1} a ${linha_fim || 'fim'})`);
         try {
           const content = readCodeFile(caminho, linha_inicio, linha_fim);
           return {
@@ -934,6 +956,7 @@ export function initMcp(app, gateway) {
         if (!localModeEnabled) {
           return { isError: true, content: [{ type: 'text', text: DISK_OFF_MSG }] };
         }
+        console.log(`📂 [MCP TOOL] Listar Arquivos: pasta="${pasta || 'raiz'}" (filtro="${extensao || 'todos'}")`);
         try {
           const { targetDir, results: files } = listProjectFiles(pasta, extensao, recursivo);
           return {
@@ -967,6 +990,7 @@ export function initMcp(app, gateway) {
         if (!localModeEnabled) {
           return { isError: true, content: [{ type: 'text', text: DISK_OFF_MSG }] };
         }
+        console.log(`🔍 [MCP TOOL] Buscar no Código: termo="${termo}" em "${pasta || 'raiz'}"`);
         try {
           const { targetDir, results } = searchInCode(termo, pasta, extensao);
           return {
@@ -1002,6 +1026,7 @@ export function initMcp(app, gateway) {
         if (!localModeEnabled) {
           return { isError: true, content: [{ type: 'text', text: DISK_OFF_MSG }] };
         }
+        console.log(`💾 [MCP TOOL] Gravar Arquivo: "${caminho}" (${conteudo.length} caracteres)`);
         try {
           const msg = writeCodeFile(caminho, conteudo, sobrescrever);
           return {
@@ -1032,6 +1057,7 @@ export function initMcp(app, gateway) {
         if (!localModeEnabled) {
           return { isError: true, content: [{ type: 'text', text: DISK_OFF_MSG }] };
         }
+        console.log(`✏️ [MCP TOOL] Editar Arquivo: "${caminho}"`);
         try {
           const msg = editCodeFile(caminho, alvo, substituicao);
           return {
