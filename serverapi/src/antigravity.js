@@ -114,7 +114,7 @@ export async function generateContent(accessToken, projectId, model, contents, s
 
   const generationConfig = {
     temperature: customConfig?.temperature !== undefined ? customConfig.temperature : 0.7,
-    maxOutputTokens: customConfig?.maxOutputTokens || 8192
+    maxOutputTokens: customConfig?.maxOutputTokens || 32768
   };
 
   if (customConfig?.thinkingBudget !== undefined) {
@@ -162,7 +162,7 @@ export function streamGenerateContent(accessToken, projectId, model, contents, s
 
     const generationConfig = {
       temperature: customConfig?.temperature !== undefined ? customConfig.temperature : 0.7,
-      maxOutputTokens: customConfig?.maxOutputTokens || 8192
+      maxOutputTokens: customConfig?.maxOutputTokens || 32768
     };
 
     if (customConfig?.thinkingBudget !== undefined) {

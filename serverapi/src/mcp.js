@@ -36,12 +36,12 @@ let localModeEnabled = Boolean(ENV_LOCAL_FALLBACK && fs.existsSync(defaultProjec
 let projectRoot = defaultProjectRoot;
 
 // Descrições neutras — sempre corretas independente do modo (a IA cliente decide sozinha).
-const DESC_ARQUIVOS = 'Caminhos de arquivos para o subagente LER DO DISCO DO GATEWAY. Aceita caminhos relativos ao projeto padrão ou caminhos absolutos de qualquer projeto na máquina (ex: "C:/xampp/htdocs/outro_projeto/index.php" ou "admin/accounts.php"). Em gateway remoto/VPS envie o código pelo parâmetro "conteudos".';
+const DESC_ARQUIVOS = 'Caminhos de arquivos no disco para o subagente ler diretamente. Aceita caminhos absolutos (ex: "C:/xampp/htdocs/wha/index.php") ou relativos (ex: "admin/accounts.php", "wha/index.php"). O subagente carrega os arquivos completos do computador do desenvolvedor.';
 
-const DESC_TOOL_DISCO = ' (lê arquivos do disco local do computador do desenvolvedor; suporta qualquer pasta ou projeto com caminho absoluto ou relativo)';
+const DESC_TOOL_DISCO = ' (acesso direto aos arquivos e código no disco local do computador)';
 
 // Mensagem padrão quando uma tool de disco é chamada em gateway remoto/VPS.
-const DISK_OFF_MSG = 'Leitura de disco DESLIGADA neste gateway (modo remoto/VPS). Esta ferramenta só funciona em modo LOCAL — ative no painel SuperAdmin (toggle "Modo Local do MCP"). Para analisar código agora, use a ferramenta executar_subagente enviando o código no parâmetro "conteudos" (a IA cliente lê o arquivo localmente e envia o conteúdo).';
+const DISK_OFF_MSG = 'Leitura de disco está DESLIGADA neste gateway. Ative no painel SuperAdmin (toggle "Modo Local do MCP").';
 
 const IGNORED_DIRS = new Set([
   'node_modules',
@@ -85,7 +85,7 @@ function resolveSafePath(userPath, baseDir = projectRoot) {
     if (fs.existsSync(candidateBase)) {
       target = candidateBase;
     } else {
-      // 2. Tenta relativo à pasta pai (ex: c:\xampp\htdocs se baseDir for c:\xampp\htdocs\brloveapi2)
+      // 2. Tenta relativo à pasta pai (ex: c:\xampp\htdocs)
       const parentDir = path.dirname(baseDir);
       const candidateParent = path.resolve(parentDir, cleanUserPath);
       if (fs.existsSync(candidateParent)) {
@@ -96,7 +96,25 @@ function resolveSafePath(userPath, baseDir = projectRoot) {
         if (fs.existsSync(candidateDefault)) {
           target = candidateDefault;
         } else {
-          target = candidateBase;
+          // 4. Procura se existe dentro de qualquer pasta irmã de C:\xampp\htdocs (ex: wha, saas, delivery, etc.)
+          let foundInSister = null;
+          try {
+            const htdocsDir = path.dirname(defaultProjectRoot);
+            if (fs.existsSync(htdocsDir)) {
+              const sisters = fs.readdirSync(htdocsDir, { withFileTypes: true });
+              for (const s of sisters) {
+                if (s.isDirectory() && !s.name.startsWith('.')) {
+                  const checkPath = path.resolve(htdocsDir, s.name, cleanUserPath);
+                  if (fs.existsSync(checkPath)) {
+                    foundInSister = checkPath;
+                    break;
+                  }
+                }
+              }
+            }
+          } catch (e) {}
+
+          target = foundInSister || candidateBase;
         }
       }
     }
@@ -120,7 +138,7 @@ function resolveSafePath(userPath, baseDir = projectRoot) {
 }
 
 /**
- * Lê arquivo de código com numeração de linhas e suporte a paginação
+ * Lê arquivo de código com numeração de linhas e suporte a arquivos grandes
  */
 function readCodeFile(caminho, linhaInicio = 1, linhaFim = null) {
   const safePath = resolveSafePath(caminho);
@@ -133,7 +151,7 @@ function readCodeFile(caminho, linhaInicio = 1, linhaFim = null) {
   const total = allLines.length;
 
   const start = Math.max(1, parseInt(linhaInicio, 10) || 1);
-  const end = linhaFim ? Math.min(total, parseInt(linhaFim, 10)) : Math.min(total, start + 499);
+  const end = linhaFim ? Math.min(total, parseInt(linhaFim, 10)) : Math.min(total, start + 2999);
 
   const selected = [];
   for (let i = start; i <= end; i++) {
@@ -331,23 +349,14 @@ function searchInCode(termo, subPasta = '', extensao = '.php') {
  */
 function stripThinking(text) {
   if (!text || typeof text !== 'string') return '';
-
   let cleaned = text;
-
-  // 1. Remove blocos com tags fechadas <thinking>...</thinking>, <thought>...</thought>, etc.
+  // Remove blocos fechados de thinking / reasoning
   cleaned = cleaned.replace(/<thinking\b[^>]*>[\s\S]*?<\/thinking>/gi, '');
   cleaned = cleaned.replace(/<thought\b[^>]*>[\s\S]*?<\/thought>/gi, '');
   cleaned = cleaned.replace(/<reasoning\b[^>]*>[\s\S]*?<\/reasoning>/gi, '');
   cleaned = cleaned.replace(/<antThinking\b[^>]*>[\s\S]*?<\/antThinking>/gi, '');
-
-  // 2. Remove tags abertas não fechadas
-  cleaned = cleaned.replace(/<thinking\b[^>]*>[\s\S]*$/gi, '');
-  cleaned = cleaned.replace(/<thought\b[^>]*>[\s\S]*$/gi, '');
-  cleaned = cleaned.replace(/<reasoning\b[^>]*>[\s\S]*$/gi, '');
-
-  // 3. Remove blocos em Markdown no início do texto do tipo "Thinking Process: ..." ou "Thought: ..."
+  // Se o texto iniciar diretamente com um bloco markdown de thinking antes da resposta real:
   cleaned = cleaned.replace(/^(?:\*{0,2}(?:Thinking Process|Thought|Reasoning):?\*{0,2})[\s\S]*?(?=\n\n(?:[A-Z0-9#*-]|\w)|\n---|\n===|$)/i, '');
-
   return cleaned.trim();
 }
 
@@ -603,8 +612,8 @@ export function initMcp(app, gateway) {
         const caminho = item.caminho || item.path || item.nome || 'arquivo';
         const conteudo = typeof item === 'string' ? item : (item.conteudo || item.content || '');
         if (!conteudo) continue;
-        const truncated = conteudo.length > 150000
-          ? conteudo.slice(0, 150000) + '\n... [conteúdo truncado para manter performance]'
+        const truncated = conteudo.length > 500000
+          ? conteudo.slice(0, 500000) + '\n... [conteúdo truncado para manter performance]'
           : conteudo;
         fileContentsContext += `\n\n=== ARQUIVO ENVIADO PELO CLIENTE: ${caminho} ===\n${truncated}\n=== FIM DO ARQUIVO ===`;
       }
@@ -620,8 +629,8 @@ export function initMcp(app, gateway) {
           const safePath = resolveSafePath(filePath);
           if (fs.existsSync(safePath) && fs.statSync(safePath).isFile()) {
             const content = fs.readFileSync(safePath, 'utf8');
-            const truncated = content.length > 150000
-              ? content.slice(0, 150000) + '\n... [conteúdo truncado para manter performance]'
+            const truncated = content.length > 500000
+              ? content.slice(0, 500000) + '\n... [conteúdo truncado para manter performance]'
               : content;
             fileContentsContext += `\n\n=== ARQUIVO DO PROJETO (disco): ${filePath} ===\n${truncated}\n=== FIM DO ARQUIVO ===`;
           } else {
@@ -654,7 +663,7 @@ export function initMcp(app, gateway) {
     // Configuração de geração parametrizável (com limites seguros)
     const genConfig = {
       temperature: (typeof temperature === 'number' && temperature >= 0 && temperature <= 2) ? temperature : 0.7,
-      maxOutputTokens: (typeof max_tokens === 'number' && max_tokens > 0) ? Math.min(max_tokens, 65536) : 16384,
+      maxOutputTokens: (typeof max_tokens === 'number' && max_tokens > 0) ? Math.min(max_tokens, 65536) : 32768,
       tools: []
     };
 
@@ -822,7 +831,7 @@ export function initMcp(app, gateway) {
     // -------------------------------------------------------------
     server.tool(
       'executar_subagente',
-      'Delega uma tarefa/raciocínio complexo a um subagente na API do Painel (Claude Opus Thinking, Sonnet, Gemini, etc.). Para o subagente analisar código, envie os arquivos pelo parâmetro "conteudos" (você lê localmente e manda o conteúdo — funciona em qualquer projeto). O parâmetro "arquivos" só lê o disco do próprio servidor.',
+      'Delega uma tarefa/raciocínio complexo a um subagente na API do Painel (Claude Opus Thinking, Sonnet, Gemini, etc.). Lê arquivos locais do disco diretamente pelo parâmetro "arquivos" (em modo local) ou pelo parâmetro "conteudos" (onde a IA cliente envia o código).',
       {
         prompt: z.string().describe('Instrução clara e detalhada para o subagente executar'),
         modelo: z.string().optional().describe('Modelo da API para executar o subagente. Exemplos: claude-opus-5.5, gemini-3.7-flash-medium. Padrão: modelo padrão ativo'),
@@ -832,7 +841,7 @@ export function initMcp(app, gateway) {
           caminho: z.string().describe('Caminho/nome do arquivo'),
           conteudo: z.string().describe('Conteúdo do arquivo')
         })).optional().describe('RECOMENDADO para projetos remotos: o conteúdo dos arquivos locais já lido pela IA cliente. Funciona para qualquer projeto sem a VPS acessar seu disco. Ex: [{caminho:"revenda.php", conteudo:"<?php ..."}]'),
-        max_tokens: z.number().optional().describe('Limite de tokens de saída (padrão 16384, máx 65536)'),
+        max_tokens: z.number().optional().describe('Limite de tokens de saída (padrão 32768, máx 65536)'),
         temperature: z.number().optional().describe('Criatividade de 0 a 2 (padrão 0.7)')
       },
       async ({ prompt, modelo, system_prompt, arquivos, conteudos, max_tokens, temperature }) => {
@@ -1258,7 +1267,7 @@ export function initMcp(app, gateway) {
             tools: [
               {
                 name: 'executar_subagente',
-                description: 'Delega uma tarefa/raciocínio a um subagente da API. Para analisar código envie o conteúdo via "conteudos" (lido localmente pela IA cliente — funciona em qualquer projeto); "arquivos" só lê o disco do servidor.',
+                description: 'Delega uma tarefa/raciocínio a um subagente da API. Lê arquivos locais diretamente via "arquivos" (modo local) ou via "conteudos" (onde a IA cliente envia o código).',
                 inputSchema: {
                   type: 'object',
                   properties: {
@@ -1282,7 +1291,7 @@ export function initMcp(app, gateway) {
                       },
                       description: 'RECOMENDADO para projetos remotos: conteúdo dos arquivos locais já lido pela IA cliente. Funciona em qualquer projeto sem a VPS acessar o disco do cliente.'
                     },
-                    max_tokens: { type: 'number', description: 'Limite de tokens de saída (padrão 16384, máx 65536)' },
+                    max_tokens: { type: 'number', description: 'Limite de tokens de saída (padrão 32768, máx 65536)' },
                     temperature: { type: 'number', description: 'Criatividade de 0 a 2 (padrão 0.7)' }
                   },
                   required: ['prompt']
