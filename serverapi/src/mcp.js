@@ -326,6 +326,32 @@ function searchInCode(termo, subPasta = '', extensao = '.php') {
 }
 
 /**
+ * Remove blocos e tags de raciocínio interno (thinking/thought/reasoning)
+ * da resposta final, garantindo que o cliente receba apenas o resultado limpo e direto.
+ */
+function stripThinking(text) {
+  if (!text || typeof text !== 'string') return '';
+
+  let cleaned = text;
+
+  // 1. Remove blocos com tags fechadas <thinking>...</thinking>, <thought>...</thought>, etc.
+  cleaned = cleaned.replace(/<thinking\b[^>]*>[\s\S]*?<\/thinking>/gi, '');
+  cleaned = cleaned.replace(/<thought\b[^>]*>[\s\S]*?<\/thought>/gi, '');
+  cleaned = cleaned.replace(/<reasoning\b[^>]*>[\s\S]*?<\/reasoning>/gi, '');
+  cleaned = cleaned.replace(/<antThinking\b[^>]*>[\s\S]*?<\/antThinking>/gi, '');
+
+  // 2. Remove tags abertas não fechadas
+  cleaned = cleaned.replace(/<thinking\b[^>]*>[\s\S]*$/gi, '');
+  cleaned = cleaned.replace(/<thought\b[^>]*>[\s\S]*$/gi, '');
+  cleaned = cleaned.replace(/<reasoning\b[^>]*>[\s\S]*$/gi, '');
+
+  // 3. Remove blocos em Markdown no início do texto do tipo "Thinking Process: ..." ou "Thought: ..."
+  cleaned = cleaned.replace(/^(?:\*{0,2}(?:Thinking Process|Thought|Reasoning):?\*{0,2})[\s\S]*?(?=\n\n(?:[A-Z0-9#*-]|\w)|\n---|\n===|$)/i, '');
+
+  return cleaned.trim();
+}
+
+/**
  * Executa uma função assíncrona com re-tentativas e backoff exponencial.
  * Só retenta erros transitórios (rede, 429/5xx, timeout, provider sobrecarregado).
  * Erros definitivos (saldo, autenticação, validação) falham na hora.
@@ -511,7 +537,8 @@ export function initMcp(app, gateway) {
     if (job.status === 'error') {
       return { isError: true, text: `Erro ao executar subagente (job ${job.id}, ${secs}s): ${job.errorText}` };
     }
-    return { isError: false, text: job.resultText || '(resposta vazia)' };
+    const cleanOutput = stripThinking(job.resultText);
+    return { isError: false, text: cleanOutput || '(resposta vazia)' };
   }
 
   // Helper para extrair API Key de headers ou query param
@@ -731,6 +758,8 @@ export function initMcp(app, gateway) {
         throw primaryErr;
       }
     }
+
+    replyText = stripThinking(replyText);
 
     if (!replyText) {
       replyText = '[Aviso do Subagente: Não foi gerada resposta textual pelo modelo selecionado.]';

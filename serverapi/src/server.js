@@ -1379,6 +1379,20 @@ function getThoughtSignature(callId, fnName) {
   return null;
 }
 
+function stripThinking(text) {
+  if (!text || typeof text !== 'string') return '';
+  let cleaned = text;
+  cleaned = cleaned.replace(/<thinking\b[^>]*>[\s\S]*?<\/thinking>/gi, '');
+  cleaned = cleaned.replace(/<thought\b[^>]*>[\s\S]*?<\/thought>/gi, '');
+  cleaned = cleaned.replace(/<reasoning\b[^>]*>[\s\S]*?<\/reasoning>/gi, '');
+  cleaned = cleaned.replace(/<antThinking\b[^>]*>[\s\S]*?<\/antThinking>/gi, '');
+  cleaned = cleaned.replace(/<thinking\b[^>]*>[\s\S]*$/gi, '');
+  cleaned = cleaned.replace(/<thought\b[^>]*>[\s\S]*$/gi, '');
+  cleaned = cleaned.replace(/<reasoning\b[^>]*>[\s\S]*$/gi, '');
+  cleaned = cleaned.replace(/^(?:\*{0,2}(?:Thinking Process|Thought|Reasoning):?\*{0,2})[\s\S]*?(?=\n\n(?:[A-Z0-9#*-]|\w)|\n---|\n===|$)/i, '');
+  return cleaned.trim();
+}
+
 function extractGeminiResponse(googleResp) {
   const actualResp = googleResp?.response || googleResp;
   const candidates = actualResp?.candidates || [];
@@ -1412,7 +1426,7 @@ function extractGeminiResponse(googleResp) {
     }
   }
 
-  replyText = replyText.replace(/<\/?thought>/gi, '').replace(/\bthought\b/gi, '').trim();
+  replyText = stripThinking(replyText);
   return { replyText, toolCalls };
 }
 
