@@ -397,9 +397,9 @@ async function syncSingleAccount(acc, shouldProbeOpus = true) {
   const remaining = geminiModel?.quotaInfo?.remainingFraction ?? 1.0;
   const newStatus = remaining > 0.05 ? 'active' : 'quota_exhausted';
 
-  // 5. UPDATE ATÔMICO ÚNICO NO BANCO DE DADOS
+  // 5. UPDATE ATÔMICO ÚNICO NO BANCO DE DADOS (preserva status 'banned' para não sobrescrever ban do Google)
   await pool.query(
-    'UPDATE antigravity_accounts SET quotas_json = ?, status = ?, last_sync_at = NOW() WHERE id = ?',
+    "UPDATE antigravity_accounts SET quotas_json = ?, status = IF(status = 'banned', 'banned', ?), last_sync_at = NOW() WHERE id = ?",
     [JSON.stringify(quotas), newStatus, acc.id]
   );
 

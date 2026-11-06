@@ -71,14 +71,15 @@ class AntigravityAccountPool {
 
     if (accounts.length === 0) {
       // Auto-recuperação: se todas estiverem como quota_exhausted, reativa para tentar novamente
+      // Exclui contas banidas (status = 'banned') para não sobrescrever o ban do Google
       const [allActive] = await this.pool.query(`
-        SELECT * FROM antigravity_accounts 
-        WHERE is_active = 1
+        SELECT * FROM antigravity_accounts
+        WHERE is_active = 1 AND status != 'banned'
         ORDER BY total_requests ASC
       `);
 
       if (allActive.length > 0) {
-        await this.pool.query(`UPDATE antigravity_accounts SET status = 'active' WHERE is_active = 1`);
+        await this.pool.query(`UPDATE antigravity_accounts SET status = 'active' WHERE is_active = 1 AND status != 'banned'`);
         accounts = allActive;
       } else {
         throw new Error('Nenhuma conta Google Antigravity conectada no pool.');

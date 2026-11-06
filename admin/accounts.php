@@ -389,9 +389,19 @@ require_once __DIR__ . '/includes/header.php';
                         <span class="px-2.5 py-0.5 rounded-full bg-rose-600/30 text-rose-300 text-[10px] font-mono font-bold border border-rose-500/30">403 TOS_VIOLATION</span>
                     </h4>
                     <p class="text-xs text-rose-200/80 mt-1 leading-relaxed">
-                        O Google desativou o Cloud Code nestas contas por violação de termos de serviço. O gateway isolou essas contas automaticamente para não derrubar as requisições do seu pool. 
+                        O Google desativou o Cloud Code nestas contas por violação de termos de serviço. O gateway isolou essas contas automaticamente para não derrubar as requisições do seu pool.
                         Você pode tentar <strong>Reautenticar</strong> ou <strong>Colar o link na VPS</strong> para verificar se a conta volta.
                     </p>
+                    <div class="mt-2.5 flex flex-wrap gap-2">
+                        <?php foreach ($accounts as $ba): ?>
+                            <?php if ($ba['status'] === 'banned'): ?>
+                                <span class="px-2.5 py-1 rounded-lg bg-rose-900/40 border border-rose-500/30 text-rose-100 text-[11px] font-mono flex items-center gap-1.5" title="Conta banida — use este email no formulário de apelação do Google">
+                                    <i class="fa-solid fa-circle-user text-rose-400 text-[10px]"></i>
+                                    <?= htmlspecialchars($ba['email']) ?>
+                                </span>
+                            <?php endif; ?>
+                        <?php endforeach; ?>
+                    </div>
                 </div>
             </div>
             <div class="flex items-center space-x-2 shrink-0 self-end md:self-center">
