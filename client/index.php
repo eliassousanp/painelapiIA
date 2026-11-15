@@ -451,6 +451,16 @@ if (isset($_COOKIE['theme_scheme'])) {
                 </div>
             </div>
 
+            <section class="p-5 rounded-2xl border space-y-3" style="background: var(--bg-surface-elevated); border-color: var(--border-color);">
+                <h3 class="font-bold" style="color: var(--text-heading);">Diretor de vídeo — POST /v1/video</h3>
+                <p class="text-xs" style="color: var(--text-muted);">Envia instruções especializadas de roteiro e direção ao modelo. A resposta é texto no formato de chat; a rota não renderiza nem entrega um arquivo de vídeo. Informe o tema, o formato e os recursos do motor que fará a produção.</p>
+                <pre class="text-xs overflow-x-auto whitespace-pre-wrap" style="color: var(--text-heading);">curl '<?= htmlspecialchars($apiBaseUrl . '/video', ENT_QUOTES, 'UTF-8') ?>' \
+  -H 'Authorization: Bearer SUA_API_KEY' \
+  -H 'Content-Type: application/json' \
+  -d '{"model":"SEU_MODELO","messages":[{"role":"user","content":"Crie o roteiro e o plano de cenas de uma história de suspense. Formato vertical, com narração. O motor permite personagens, objetos e câmera móvel."}]}'</pre>
+                <p class="text-xs" style="color: var(--text-muted);">Use uma chave da sua conta e um modelo ativo. O uso segue a cobrança e os limites do modelo. Após gerar a prévia com seu motor, envie os problemas observados em uma nova mensagem para orientar a revisão.</p>
+            </section>
+
             <!-- Grid de Endpoints Disponíveis -->
             <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5 gap-4">
                 <div class="glass-card p-4 rounded-xl border border-gray-800 hover:border-indigo-500/40 transition cursor-pointer" onclick="switchTab('curl')">

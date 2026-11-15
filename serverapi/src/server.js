@@ -2071,7 +2071,7 @@ app.post(['/v1/messages', '/messages'], async (req, res) => {
 // -------------------------------------------------------------
 // ENDPOINT OPENAI E AZURE COMPATÍVEL (/v1/chat/completions)
 // -------------------------------------------------------------
-app.post(['/openai/deployments/:deployment/chat/completions', '/v1/chat/completions', '/chat/completions'], async (req, res) => {
+app.post(['/openai/deployments/:deployment/chat/completions', '/v1/chat/completions', '/chat/completions', '/v1/video', '/video'], async (req, res) => {
   const userKey = await authenticateClient(req, res);
   if (!userKey) return;
 
@@ -2080,7 +2080,12 @@ app.post(['/openai/deployments/:deployment/chat/completions', '/v1/chat/completi
   const { contents, userSystemPrompt } = convertOpenAiMessagesToGemini(incomingMessages);
 
   const { targetEngine, customPrompt, providerId, multiplier: modelMultiplier } = await resolveModelConfig(rawModel, contents);
-  const finalSystemInstruction = [customPrompt, userSystemPrompt].filter(Boolean).join('\n\n');
+  let videoPrompt = '';
+  if (req.path === '/v1/video' || req.path === '/video') {
+    try { videoPrompt = fs.readFileSync(path.join(__dirname, 'video-diretor.md'), 'utf8'); }
+    catch { return res.status(503).json({error: {message:'Instruções do diretor de vídeo indisponíveis.'}}); }
+  }
+  const finalSystemInstruction = [customPrompt, videoPrompt, userSystemPrompt].filter(Boolean).join('\n\n');
 
   // Suporte a tools e functions padrão OpenAI
   const rawTools = req.body.tools || (req.body.functions ? req.body.functions.map(f => ({ type: 'function', function: f })) : null);
