@@ -15,15 +15,19 @@ class AntigravityAccountPool {
     this.pool = pool;
     // Map<accountId, AccountRuntimeStats>
     this.stats = new Map();
-    // Limites de segurança por categoria de modelo
+    // Limites de segurança por categoria de modelo.
+    // Valores conservadores + espaçamento mínimo entre chamadas na MESMA conta
+    // para o tráfego parecer uso humano no IDE e reduzir risco de ban por abuso.
     this.limits = {
       heavy: {
-        maxConcurrent: 2, // Max requisições simultâneas por conta
-        maxRpm: 8         // Max requisições por minuto por conta
+        maxConcurrent: 1,   // 1 requisição pesada por vez por conta (mais humano)
+        maxRpm: 6,          // Máx requisições por minuto por conta
+        minSpacingMs: 3000  // Intervalo mínimo entre 2 chamadas na mesma conta
       },
       light: {
-        maxConcurrent: 4,
-        maxRpm: 18
+        maxConcurrent: 3,
+        maxRpm: 12,
+        minSpacingMs: 1200
       }
     };
   }
@@ -203,8 +207,14 @@ class AntigravityAccountPool {
         // Se está em cooldown ou sem cota real, pula para a próxima
         if (inCooldown || remainingFraction <= 0.02) continue;
 
-        // Se a conta tem espaço de concorrência e não estourou o teto de RPM
-        if (stat.activeRequests < limits.maxConcurrent && rpm < limits.maxRpm) {
+        // Espaçamento mínimo: não dispara 2 chamadas coladas na mesma conta.
+        // Prefere espalhar para outra conta; se nenhuma estiver "descansada",
+        // a micro-fila abaixo espera e tenta de novo (até o fallback final).
+        const lastTs = stat.requestTimestamps.length ? Math.max(...stat.requestTimestamps) : 0;
+        const spacedEnough = (Date.now() - lastTs) >= (limits.minSpacingMs || 0);
+
+        // Se a conta tem espaço de concorrência, não estourou o RPM e respeitou o espaçamento
+        if (stat.activeRequests < limits.maxConcurrent && rpm < limits.maxRpm && spacedEnough) {
           // Token válido
           const tokenOk = await this.ensureTokenFresh(account);
           if (!tokenOk) continue;
