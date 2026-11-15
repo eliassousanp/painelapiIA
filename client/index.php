@@ -451,18 +451,13 @@ if (isset($_COOKIE['theme_scheme'])) {
                 </div>
             </div>
 
-            <section class="p-5 rounded-2xl border space-y-3" style="background: var(--bg-surface-elevated); border-color: var(--border-color);">
-                <h3 class="font-bold" style="color: var(--text-heading);">Diretor de vídeo — POST /v1/video</h3>
-                <p class="text-xs" style="color: var(--text-muted);">Envia instruções especializadas de roteiro e direção ao modelo. A resposta é texto no formato de chat; a rota não renderiza nem entrega um arquivo de vídeo. Informe o tema, o formato e os recursos do motor que fará a produção.</p>
-                <pre class="text-xs overflow-x-auto whitespace-pre-wrap" style="color: var(--text-heading);">curl '<?= htmlspecialchars($apiBaseUrl . '/video', ENT_QUOTES, 'UTF-8') ?>' \
-  -H 'Authorization: Bearer SUA_API_KEY' \
-  -H 'Content-Type: application/json' \
-  -d '{"model":"SEU_MODELO","messages":[{"role":"user","content":"Crie o roteiro e o plano de cenas de uma história de suspense. Formato vertical, com narração. O motor permite personagens, objetos e câmera móvel."}]}'</pre>
-                <p class="text-xs" style="color: var(--text-muted);">Use uma chave da sua conta e um modelo ativo. O uso segue a cobrança e os limites do modelo. Após gerar a prévia com seu motor, envie os problemas observados em uma nova mensagem para orientar a revisão.</p>
-            </section>
-
             <!-- Grid de Endpoints Disponíveis -->
             <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5 gap-4">
+                <div class="glass-card p-4 rounded-xl border border-emerald-500/30 hover:border-emerald-500/60 transition bg-emerald-500/5 cursor-pointer" onclick="switchTab('video')">
+                    <div class="flex items-center space-x-2 text-emerald-400 text-xs font-bold uppercase tracking-wider mb-2"><span class="px-2 py-0.5 rounded bg-emerald-500/20 font-mono">POST</span><span>Diretor de vídeo</span></div>
+                    <code class="text-xs font-mono text-emerald-300 block truncate select-all">/v1/video</code>
+                    <p class="text-[11px] text-gray-400 mt-2">Roteiros, cenas e orientações de direção para seu motor.</p>
+                </div>
                 <div class="glass-card p-4 rounded-xl border border-gray-800 hover:border-indigo-500/40 transition cursor-pointer" onclick="switchTab('curl')">
                     <div class="flex items-center space-x-2 text-indigo-400 text-xs font-bold uppercase tracking-wider mb-2">
                         <span class="px-2 py-0.5 rounded bg-indigo-500/20 font-mono">POST</span>
@@ -576,6 +571,9 @@ if (isset($_COOKIE['theme_scheme'])) {
                     <button onclick="switchTab('claudecode')" id="tab-claudecode" class="tab-btn px-4 py-2 rounded-xl text-xs font-semibold text-gray-400 hover:text-white transition">
                         <i class="fa-solid fa-terminal mr-1.5 text-purple-400"></i> Claude Code CLI
                     </button>
+                    <button onclick="switchTab('video')" id="tab-video" class="tab-btn px-4 py-2 rounded-xl text-xs font-semibold text-gray-400 hover:text-white transition flex items-center border border-emerald-500/20 bg-emerald-500/5 hover:bg-emerald-500/10 shrink-0">
+                        <i class="fa-solid fa-film mr-1.5 text-emerald-400"></i> Diretor de vídeo
+                    </button>
                     <button onclick="switchTab('mcp')" id="tab-mcp" class="tab-btn px-4 py-2 rounded-xl text-xs font-semibold text-gray-400 hover:text-white transition flex items-center border border-cyan-500/20 bg-cyan-500/5 hover:bg-cyan-500/10 shrink-0">
                         <i class="fa-solid fa-cube mr-1.5 text-cyan-400"></i> MCP Server (Claude Desktop & Subagentes)
                     </button>
@@ -587,6 +585,24 @@ if (isset($_COOKIE['theme_scheme'])) {
                         <i class="fa-solid fa-microphone-lines mr-1.5 text-rose-400 animate-pulse"></i> Realtime Voice (WebSocket)
                     </button>
                     <?php endif; ?>
+                </div>
+
+                <!-- Conteúdo Tab: Diretor de vídeo -->
+                <div id="tab-content-video" class="tab-content pt-4 space-y-4 hidden">
+                    <div class="bg-emerald-950/40 p-5 rounded-2xl border border-emerald-500/30 space-y-4">
+                        <div class="font-bold text-emerald-300 flex items-center text-sm"><i class="fa-solid fa-film mr-2"></i> Diretor de vídeo — roteiro e planejamento visual</div>
+                        <p class="text-xs text-gray-300 leading-relaxed">Envie seu tema, formato, duração e recursos do motor. O diretor planeja história, cenários, personagens, ações, câmera, luz, som e ganchos. Para revisar uma prévia, envie os problemas observados e o contexto na conversa.</p>
+                        <div class="grid grid-cols-1 md:grid-cols-3 gap-3 text-xs">
+                            <div class="bg-gray-950/80 p-3 rounded-xl border border-gray-800"><span class="text-gray-400 block mb-1">Método e rota</span><code class="text-emerald-300 font-mono break-all">POST <?= htmlspecialchars($apiBaseUrl . '/video', ENT_QUOTES, 'UTF-8') ?></code></div>
+                            <div class="bg-gray-950/80 p-3 rounded-xl border border-gray-800"><span class="text-gray-400 block mb-1">Autenticação</span><code class="text-cyan-300 font-mono">Bearer SUA_API_KEY</code></div>
+                            <div class="bg-gray-950/80 p-3 rounded-xl border border-gray-800"><span class="text-gray-400 block mb-1">Resposta</span><span class="text-gray-200">Chat compatível com OpenAI</span></div>
+                        </div>
+                        <div><div class="text-xs font-bold text-gray-300 mb-2">Exemplo cURL</div><pre class="bg-gray-950/80 p-4 rounded-xl border border-gray-800 text-xs text-gray-200 overflow-x-auto whitespace-pre">curl '<?= htmlspecialchars($apiBaseUrl . '/video', ENT_QUOTES, 'UTF-8') ?>' \
+  -H 'Authorization: Bearer SUA_API_KEY' \
+  -H 'Content-Type: application/json' \
+  -d '{"model":"SEU_MODELO","messages":[{"role":"user","content":"Crie um episódio de suspense em um banheiro antigo, com gancho inicial e final. Vídeo vertical, com narração. Meu motor cria cenários e personagens e movimenta a câmera."}]}'</pre></div>
+                        <p class="text-xs text-gray-300">Use uma chave da conta e um modelo ativo. A rota retorna texto ou código solicitado; ela não renderiza o vídeo. A produção e a conferência da prévia dependem do motor conectado. O uso segue os limites e a cobrança do modelo.</p>
+                    </div>
                 </div>
 
                 <!-- Conteúdo Tab: VS Code Extensões -->
