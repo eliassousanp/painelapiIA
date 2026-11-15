@@ -661,9 +661,12 @@ export function initMcp(app, gateway) {
     const finalSystemInstruction = systemParts.join('\n\n');
 
     // Configuração de geração parametrizável (com limites seguros)
+    // TETO discreto: 8192 tokens de saída para que as requisições fiquem parecidas
+    // com o uso normal do IDE Antigravity e não destoem como automação em massa.
+    const MAX_OUTPUT_CAP = 8192;
     const genConfig = {
       temperature: (typeof temperature === 'number' && temperature >= 0 && temperature <= 2) ? temperature : 0.7,
-      maxOutputTokens: (typeof max_tokens === 'number' && max_tokens > 0) ? Math.min(max_tokens, 65536) : 32768,
+      maxOutputTokens: (typeof max_tokens === 'number' && max_tokens > 0) ? Math.min(max_tokens, MAX_OUTPUT_CAP) : MAX_OUTPUT_CAP,
       tools: []
     };
 
@@ -841,7 +844,7 @@ export function initMcp(app, gateway) {
           caminho: z.string().describe('Caminho/nome do arquivo'),
           conteudo: z.string().describe('Conteúdo do arquivo')
         })).optional().describe('RECOMENDADO para projetos remotos: o conteúdo dos arquivos locais já lido pela IA cliente. Funciona para qualquer projeto sem a VPS acessar seu disco. Ex: [{caminho:"revenda.php", conteudo:"<?php ..."}]'),
-        max_tokens: z.number().optional().describe('Limite de tokens de saída (padrão 32768, máx 65536)'),
+        max_tokens: z.number().optional().describe('Limite de tokens de saída (padrão e máx 8192, limitado para parecer uso normal do IDE)'),
         temperature: z.number().optional().describe('Criatividade de 0 a 2 (padrão 0.7)')
       },
       async ({ prompt, modelo, system_prompt, arquivos, conteudos, max_tokens, temperature }) => {
@@ -1291,7 +1294,7 @@ export function initMcp(app, gateway) {
                       },
                       description: 'RECOMENDADO para projetos remotos: conteúdo dos arquivos locais já lido pela IA cliente. Funciona em qualquer projeto sem a VPS acessar o disco do cliente.'
                     },
-                    max_tokens: { type: 'number', description: 'Limite de tokens de saída (padrão 32768, máx 65536)' },
+                    max_tokens: { type: 'number', description: 'Limite de tokens de saída (padrão e máx 8192, limitado para parecer uso normal do IDE)' },
                     temperature: { type: 'number', description: 'Criatividade de 0 a 2 (padrão 0.7)' }
                   },
                   required: ['prompt']
