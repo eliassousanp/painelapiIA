@@ -418,10 +418,10 @@ require_once __DIR__ . '/includes/header.php';
                     <div class="mt-2.5 flex flex-wrap gap-2">
                         <?php foreach ($accounts as $ba): ?>
                             <?php if ($ba['status'] === 'banned'): ?>
-                                <button type="button" onclick="copyText('<?= htmlspecialchars($ba['email'], ENT_QUOTES) ?>', this, 'Email copiado!')" class="px-2.5 py-1 rounded-lg bg-rose-900/40 hover:bg-rose-900/70 border border-rose-500/30 text-rose-100 text-[11px] font-mono flex items-center gap-1.5 cursor-pointer transition" title="Clique para copiar este email e colar no formulário de apelação">
+                                <button type="button" onclick="copyText('<?= htmlspecialchars($appealFormUrl, ENT_QUOTES) ?>', this, 'Link de apelação copiado!')" class="px-2.5 py-1 rounded-lg bg-rose-900/40 hover:bg-rose-900/70 border border-rose-500/30 text-rose-100 text-[11px] font-mono flex items-center gap-1.5 cursor-pointer transition" title="Clique para copiar o link do formulário de apelação desta conta e colar no outro navegador">
                                     <i class="fa-solid fa-circle-user text-rose-400 text-[10px]"></i>
                                     <span><?= htmlspecialchars($ba['email']) ?></span>
-                                    <i class="fa-solid fa-copy text-rose-400/70 text-[10px] ml-0.5"></i>
+                                    <i class="fa-solid fa-link text-rose-400/70 text-[10px] ml-0.5"></i>
                                 </button>
                             <?php endif; ?>
                         <?php endforeach; ?>
