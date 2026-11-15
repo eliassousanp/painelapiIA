@@ -1028,6 +1028,31 @@ ${toolsList}`;
 const ttsMemoryCache = new Map();
 const MAX_TTS_CACHE = 500;
 
+// Semáforo global de concorrência do Edge TTS.
+// O endpoint gratuito da Microsoft devolve 429 quando recebe muitas frases ao
+// mesmo tempo (uma resposta longa vira dezenas de chamadas paralelas). Limitamos
+// quantas síntese ocorrem simultaneamente para o tráfego não estourar o rate limit.
+const TTS_MAX_CONCURRENCY = 2;
+let ttsActiveCount = 0;
+const ttsWaitQueue = [];
+
+function acquireTtsSlot() {
+  if (ttsActiveCount < TTS_MAX_CONCURRENCY) {
+    ttsActiveCount++;
+    return Promise.resolve();
+  }
+  return new Promise(resolve => ttsWaitQueue.push(resolve));
+}
+
+function releaseTtsSlot() {
+  const next = ttsWaitQueue.shift();
+  if (next) {
+    next(); // repassa o slot direto para o próximo da fila (contagem se mantém)
+  } else {
+    ttsActiveCount = Math.max(0, ttsActiveCount - 1);
+  }
+}
+
 async function generateTTS(text, voiceId, rate = '+5%', abortSignal = null) {
   if (abortSignal?.aborted) return null;
 
@@ -1040,46 +1065,73 @@ async function generateTTS(text, voiceId, rate = '+5%', abortSignal = null) {
     return ttsMemoryCache.get(cacheKey);
   }
 
-  let tmpFile = null;
+  const voiceLang = (voiceId && voiceId.startsWith('pt')) ? 'pt-BR' : 'en-US';
+  const TTS_TIMEOUT_MS = 12000;   // Nunca deixa a síntese travar a pipeline
+  const MAX_ATTEMPTS = 3;         // Retries para 429/instabilidade do endpoint gratuito
+
+  // Aguarda um slot livre (limita a concorrência contra a Microsoft -> evita 429)
+  await acquireTtsSlot();
   try {
     if (abortSignal?.aborted) return null;
 
-    const voiceLang = (voiceId && voiceId.startsWith('pt')) ? 'pt-BR' : 'en-US';
-    const tts = new EdgeTTS({ voice: voiceId, lang: voiceLang, rate: rate });
-    tmpFile = path.join(os.tmpdir(), `tts_${crypto.randomBytes(8).toString('hex')}.mp3`);
+    let lastErr = null;
 
-    // Race com abortSignal para interromper a síntese no Barge-in instantaneamente
-    await Promise.race([
-      tts.ttsPromise(cleanText, tmpFile),
-      new Promise((_, reject) => {
-        if (abortSignal?.aborted) return reject(new Error('TTS_ABORTED'));
-        abortSignal?.addEventListener('abort', () => reject(new Error('TTS_ABORTED')), { once: true });
-      })
-    ]);
+    for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+      if (abortSignal?.aborted) return null;
 
-    if (abortSignal?.aborted) return null;
+      let tmpFile = null;
+      let timer = null;
+      try {
+        const tts = new EdgeTTS({ voice: voiceId, lang: voiceLang, rate: rate });
+        tmpFile = path.join(os.tmpdir(), `tts_${crypto.randomBytes(8).toString('hex')}.mp3`);
 
-    const buffer = await fs.promises.readFile(tmpFile);
-    if (abortSignal?.aborted) return null;
+        // Race: síntese vs. abort (barge-in) vs. timeout de segurança
+        await Promise.race([
+          tts.ttsPromise(cleanText, tmpFile),
+          new Promise((_, reject) => {
+            timer = setTimeout(() => reject(new Error('TTS_TIMEOUT')), TTS_TIMEOUT_MS);
+            if (abortSignal?.aborted) return reject(new Error('TTS_ABORTED'));
+            abortSignal?.addEventListener('abort', () => reject(new Error('TTS_ABORTED')), { once: true });
+          })
+        ]);
 
-    const base64Audio = buffer.toString('base64');
+        if (abortSignal?.aborted) return null;
 
-    if (ttsMemoryCache.size >= MAX_TTS_CACHE) {
-      const firstKey = ttsMemoryCache.keys().next().value;
-      ttsMemoryCache.delete(firstKey);
+        const buffer = await fs.promises.readFile(tmpFile);
+        if (abortSignal?.aborted) return null;
+        if (!buffer || buffer.length === 0) throw new Error('TTS_EMPTY_AUDIO');
+
+        const base64Audio = buffer.toString('base64');
+
+        if (ttsMemoryCache.size >= MAX_TTS_CACHE) {
+          const firstKey = ttsMemoryCache.keys().next().value;
+          ttsMemoryCache.delete(firstKey);
+        }
+        ttsMemoryCache.set(cacheKey, base64Audio);
+
+        return base64Audio;
+      } catch (err) {
+        lastErr = err;
+        // Abort (barge-in) não é falha: aborta na hora, sem retry
+        if (err.message === 'TTS_ABORTED' || abortSignal?.aborted) return null;
+
+        if (attempt < MAX_ATTEMPTS) {
+          // Backoff exponencial; bem mais longo no 429 (rate limit da Microsoft)
+          const is429 = /429/.test(err.message || '');
+          const backoff = is429 ? 1500 * attempt : 400 * attempt;
+          console.warn(`[Edge TTS] Tentativa ${attempt}/${MAX_ATTEMPTS} falhou (${err.message}). Aguardando ${backoff}ms...`);
+          await new Promise(r => setTimeout(r, backoff));
+        }
+      } finally {
+        if (timer) clearTimeout(timer);
+        if (tmpFile) fs.promises.unlink(tmpFile).catch(() => { });
+      }
     }
-    ttsMemoryCache.set(cacheKey, base64Audio);
 
-    return base64Audio;
-  } catch (err) {
-    if (err.message !== 'TTS_ABORTED' && !abortSignal?.aborted) {
-      console.error('[Edge TTS] Erro ao gerar áudio:', err.message);
-    }
+    console.error(`[Edge TTS] Falha ao gerar áudio após ${MAX_ATTEMPTS} tentativas:`, lastErr?.message || 'erro desconhecido');
     return null;
   } finally {
-    if (tmpFile) {
-      fs.promises.unlink(tmpFile).catch(() => { });
-    }
+    releaseTtsSlot();
   }
 }
 
