@@ -33,6 +33,25 @@ if (isset($_GET['ajax_verify_quotas']) || isset($_GET['ajax_sync']) || isset($_G
     exit;
 }
 
+// -------------------------------------------------------------
+// ENDPOINT AJAX: REVERIFICAR CONTAS BANIDAS (destrava se o Google reabilitar)
+// -------------------------------------------------------------
+if (isset($_GET['ajax_recheck_banned']) || (isset($_POST['action']) && $_POST['action'] === 'ajax_recheck_banned')) {
+    header('Content-Type: application/json; charset=utf-8');
+    $accId = !empty($_REQUEST['account_id']) ? (int)$_REQUEST['account_id'] : 0;
+    $endpoint = $accId > 0 ? "auth/antigravity/recheck-banned?id={$accId}" : "auth/antigravity/recheck-banned";
+    $res = gateway_request($endpoint, 'GET', null, 120);
+    if ($res['success'] && is_array($res['data'])) {
+        echo json_encode($res['data']);
+    } else {
+        echo json_encode([
+            'success' => false,
+            'error' => "Erro ao reverificar contas banidas: " . ($res['error'] ?? 'Verifique se o serviço Node.js está rodando.')
+        ]);
+    }
+    exit;
+}
+
 if (isset($_GET['action']) && $_GET['action'] === 'export_accounts') {
     $stmt = $db->query("SELECT email, name, picture, refresh_token, access_token, token_expires_at, project_id, is_active, status, quotas_json FROM antigravity_accounts");
     $data = $stmt->fetchAll(PDO::FETCH_ASSOC);
@@ -144,6 +163,10 @@ $currentHost = $_SERVER['HTTP_HOST'] ?? 'localhost';
 $currentScheme = (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off') ? 'https' : 'http';
 $currentAppUrl = $currentScheme . '://' . $currentHost . getAppBaseUrl() . '/admin/accounts.php';
 $gatewayExternalUrl = getGatewayPublicUrl();
+
+// URLs reutilizáveis para copiar e colar em OUTRO navegador (onde a conta banida está logada)
+$reauthUrl = $gatewayExternalUrl . '/auth/antigravity/login?redirect=' . urlencode($currentAppUrl . '?msg=connected');
+$appealFormUrl = 'https://forms.gle/hGzM9MEUv2azZsrb9';
 
 $accounts = $db->query("SELECT * FROM antigravity_accounts ORDER BY id DESC")->fetchAll();
 $totalAccounts = count($accounts);
@@ -390,29 +413,41 @@ require_once __DIR__ . '/includes/header.php';
                     </h4>
                     <p class="text-xs text-rose-200/80 mt-1 leading-relaxed">
                         O Google desativou o Cloud Code nestas contas por violação de termos de serviço. O gateway isolou essas contas automaticamente para não derrubar as requisições do seu pool.
-                        Você pode tentar <strong>Reautenticar</strong> ou <strong>Colar o link na VPS</strong> para verificar se a conta volta.
+                        Clique em <strong>Verificar se Voltaram</strong> para testar todas de uma vez. Como você está logado em outra conta neste navegador, use <strong>Copiar link</strong> e cole no navegador onde a conta banida está logada.
                     </p>
                     <div class="mt-2.5 flex flex-wrap gap-2">
                         <?php foreach ($accounts as $ba): ?>
                             <?php if ($ba['status'] === 'banned'): ?>
-                                <span class="px-2.5 py-1 rounded-lg bg-rose-900/40 border border-rose-500/30 text-rose-100 text-[11px] font-mono flex items-center gap-1.5" title="Conta banida — use este email no formulário de apelação do Google">
+                                <button type="button" onclick="copyText('<?= htmlspecialchars($ba['email'], ENT_QUOTES) ?>', this, 'Email copiado!')" class="px-2.5 py-1 rounded-lg bg-rose-900/40 hover:bg-rose-900/70 border border-rose-500/30 text-rose-100 text-[11px] font-mono flex items-center gap-1.5 cursor-pointer transition" title="Clique para copiar este email e colar no formulário de apelação">
                                     <i class="fa-solid fa-circle-user text-rose-400 text-[10px]"></i>
-                                    <?= htmlspecialchars($ba['email']) ?>
-                                </span>
+                                    <span><?= htmlspecialchars($ba['email']) ?></span>
+                                    <i class="fa-solid fa-copy text-rose-400/70 text-[10px] ml-0.5"></i>
+                                </button>
                             <?php endif; ?>
                         <?php endforeach; ?>
                     </div>
+                    <div id="bannedRecheckStatus" class="hidden mt-2.5 text-[11px] font-semibold"></div>
                 </div>
             </div>
-            <div class="flex items-center space-x-2 shrink-0 self-end md:self-center">
-                <button type="button" onclick="document.getElementById('vpsModal').classList.remove('hidden')" class="px-3.5 py-2.5 rounded-xl bg-amber-500/10 hover:bg-amber-500/20 text-amber-300 font-bold text-xs border border-amber-500/30 transition flex items-center gap-1.5 cursor-pointer shadow-sm">
-                    <i class="fa-solid fa-server text-[11px]"></i>
+            <div class="flex flex-col gap-2 shrink-0 self-stretch md:self-center md:w-64">
+                <button type="button" onclick="recheckBanned(0, this)" class="w-full px-3.5 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs border border-emerald-400/40 transition flex items-center justify-center gap-1.5 cursor-pointer shadow-md shadow-emerald-600/20 disabled:opacity-60 disabled:cursor-not-allowed">
+                    <i class="fa-solid fa-arrows-rotate text-[11px]"></i>
+                    <span>Verificar se Voltaram</span>
+                </button>
+                <div class="grid grid-cols-2 gap-2">
+                    <button type="button" onclick="copyText('<?= htmlspecialchars($reauthUrl, ENT_QUOTES) ?>', this, 'Link copiado!')" class="px-2.5 py-2 rounded-xl bg-amber-500/10 hover:bg-amber-500/20 text-amber-300 font-bold text-[11px] border border-amber-500/30 transition flex items-center justify-center gap-1.5 cursor-pointer" title="Copiar link de reautenticação para colar no outro navegador">
+                        <i class="fa-solid fa-link text-[10px]"></i>
+                        <span>Reautenticar</span>
+                    </button>
+                    <button type="button" onclick="copyText('<?= htmlspecialchars($appealFormUrl, ENT_QUOTES) ?>', this, 'Link copiado!')" class="px-2.5 py-2 rounded-xl bg-rose-600/20 hover:bg-rose-600/30 text-rose-200 font-bold text-[11px] border border-rose-500/30 transition flex items-center justify-center gap-1.5 cursor-pointer" title="Copiar link do formulário de apelação do Google">
+                        <i class="fa-solid fa-gavel text-[10px]"></i>
+                        <span>Apelação</span>
+                    </button>
+                </div>
+                <button type="button" onclick="document.getElementById('vpsModal').classList.remove('hidden')" class="w-full px-2.5 py-2 rounded-xl bg-cyan-600/10 hover:bg-cyan-600/20 text-cyan-300 font-semibold text-[11px] border border-cyan-500/30 transition flex items-center justify-center gap-1.5 cursor-pointer" title="Colar a URL de callback localhost:51121 depois de reautenticar na VPS">
+                    <i class="fa-solid fa-server text-[10px]"></i>
                     <span>Colar Link VPS</span>
                 </button>
-                <a href="https://forms.gle/hGzM9MEUv2azZsrb9" target="_blank" class="px-3.5 py-2.5 rounded-xl bg-rose-600 hover:bg-rose-500 text-white font-bold text-xs border border-rose-400/40 transition flex items-center gap-1.5 cursor-pointer shadow-md shadow-rose-600/20">
-                    <i class="fa-solid fa-gavel text-[11px]"></i>
-                    <span>Formulário de Apelação</span>
-                </a>
             </div>
         </div>
     <?php endif; ?>
@@ -769,21 +804,26 @@ require_once __DIR__ . '/includes/header.php';
                         <!-- Botões de Ação da Conta -->
                         <div class="flex items-center space-x-2 self-end lg:self-center flex-wrap gap-y-2">
                             <?php if ($acc['status'] === 'banned'): ?>
-                                <!-- 1º Passo: Botão Reautenticar (Abre OAuth) -->
-                                <a href="<?= htmlspecialchars($gatewayExternalUrl) ?>/auth/antigravity/login?redirect=<?= urlencode($currentAppUrl . '?msg=connected') ?>" target="_blank" onclick="event.stopPropagation();" class="px-3 py-2 rounded-xl bg-gradient-to-r from-amber-600 to-orange-600 hover:from-amber-500 hover:to-orange-500 text-white text-xs font-bold border border-amber-500/30 transition flex items-center space-x-1.5 shadow-lg shadow-amber-600/20 cursor-pointer" title="Clique para abrir a tela de login do Google">
-                                    <i class="fa-brands fa-google text-[11px]"></i>
-                                    <span>1º Reautenticar</span>
-                                </a>
-                                <!-- 2º Passo: Botão Colar Link VPS (Abre modal de VPS direto aqui) -->
-                                <button type="button" onclick="event.stopPropagation(); document.getElementById('vpsModal').classList.remove('hidden');" class="px-3 py-2 rounded-xl bg-cyan-600/20 hover:bg-cyan-600/30 text-cyan-300 text-xs font-bold border border-cyan-500/40 transition flex items-center space-x-1.5 cursor-pointer shadow-md" title="Cole aqui a URL localhost:51121 se estiver usando VPS">
-                                    <i class="fa-solid fa-server text-[11px] text-cyan-400"></i>
-                                    <span>2º Colar Link VPS</span>
+                                <!-- Botão Único: Verificar se a conta voltou -->
+                                <button type="button" onclick="event.stopPropagation(); recheckBanned(<?= $acc['id'] ?>, this);" title="Testa esta conta no Google para saber se o ban foi removido" class="btn-recheck-single px-3.5 py-2 rounded-xl bg-emerald-600/20 hover:bg-emerald-600/30 text-emerald-300 text-xs font-bold border border-emerald-500/30 transition flex items-center space-x-1.5 shadow-md shadow-emerald-500/10 cursor-pointer disabled:opacity-60 disabled:cursor-not-allowed">
+                                    <i class="fa-solid fa-arrows-rotate text-[11px]"></i>
+                                    <span>Verificar</span>
                                 </button>
-                                <!-- Link para Apelar no Google -->
-                                <a href="https://forms.gle/hGzM9MEUv2azZsrb9" target="_blank" onclick="event.stopPropagation();" class="px-3 py-2 rounded-xl bg-rose-600/20 hover:bg-rose-600/30 text-rose-300 text-xs font-semibold border border-rose-500/30 transition flex items-center space-x-1.5" title="Enviar formulário oficial de apelação ao Google">
+                                <!-- Copiar link de reautenticação (colar no navegador logado nesta conta) -->
+                                <button type="button" onclick="event.stopPropagation(); copyText('<?= htmlspecialchars($reauthUrl, ENT_QUOTES) ?>', this, 'Link copiado!');" title="Copia o link de login do Google para você colar no navegador onde esta conta está logada" class="px-3 py-2 rounded-xl bg-amber-500/10 hover:bg-amber-500/20 text-amber-300 text-xs font-bold border border-amber-500/30 transition flex items-center space-x-1.5 cursor-pointer">
+                                    <i class="fa-solid fa-link text-[11px]"></i>
+                                    <span>Copiar Reautenticação</span>
+                                </button>
+                                <!-- Copiar link do formulário de apelação -->
+                                <button type="button" onclick="event.stopPropagation(); copyText('<?= htmlspecialchars($appealFormUrl, ENT_QUOTES) ?>', this, 'Link copiado!');" title="Copia o link do formulário de apelação do Google" class="px-3 py-2 rounded-xl bg-rose-600/20 hover:bg-rose-600/30 text-rose-300 text-xs font-semibold border border-rose-500/30 transition flex items-center space-x-1.5 cursor-pointer">
                                     <i class="fa-solid fa-gavel text-[11px] text-rose-400"></i>
-                                    <span>Apelar Ban</span>
-                                </a>
+                                    <span>Copiar Apelação</span>
+                                </button>
+                                <!-- Colar Link VPS (abre modal) -->
+                                <button type="button" onclick="event.stopPropagation(); document.getElementById('vpsModal').classList.remove('hidden');" class="px-3 py-2 rounded-xl bg-cyan-600/10 hover:bg-cyan-600/20 text-cyan-300 text-xs font-semibold border border-cyan-500/30 transition flex items-center space-x-1.5 cursor-pointer" title="Cole aqui a URL localhost:51121 após reautenticar na VPS">
+                                    <i class="fa-solid fa-server text-[11px] text-cyan-400"></i>
+                                    <span>Colar Link VPS</span>
+                                </button>
                             <?php else: ?>
                                 <!-- Botão Único: Verificar Cotas (Consolidado Google + Opus) -->
                                 <button type="button" onclick="event.stopPropagation(); verifyAccountQuotas(<?= $acc['id'] ?>, this);" title="Verificar cotas reais de todos os modelos e probe do Claude Opus para esta conta" class="btn-verify-single px-3.5 py-2 rounded-xl bg-cyan-600/20 hover:bg-cyan-600/30 text-cyan-300 text-xs font-bold border border-cyan-500/30 transition flex items-center space-x-1.5 shadow-md shadow-cyan-500/10 cursor-pointer disabled:opacity-60 disabled:cursor-not-allowed">
@@ -794,6 +834,7 @@ require_once __DIR__ . '/includes/header.php';
 
                             <!-- Alternar Status -->
                             <form method="POST" action="" class="inline" onclick="event.stopPropagation();">
+                                <?= csrf_field() ?>
                                 <input type="hidden" name="action" value="toggle_account">
                                 <input type="hidden" name="account_id" value="<?= $acc['id'] ?>">
                                 <input type="hidden" name="current_active" value="<?= $acc['is_active'] ?>">
@@ -804,6 +845,7 @@ require_once __DIR__ . '/includes/header.php';
 
                             <!-- Excluir -->
                             <form method="POST" action="" onsubmit="return confirm('Deseja realmente remover esta conta do pool?');" class="inline" onclick="event.stopPropagation();">
+                                <?= csrf_field() ?>
                                 <input type="hidden" name="action" value="delete_account">
                                 <input type="hidden" name="account_id" value="<?= $acc['id'] ?>">
                                 <button type="submit" class="px-3 py-2 rounded-xl bg-red-600/10 hover:bg-red-600/20 text-red-400 text-xs font-semibold border border-red-500/20 transition">
@@ -1052,6 +1094,7 @@ require_once __DIR__ . '/includes/header.php';
             </a>
 
             <form method="POST" action="" class="space-y-3 pt-2">
+                <?= csrf_field() ?>
                 <input type="hidden" name="action" value="manual_vps_connect">
                 <div>
                     <label class="block font-semibold text-gray-300 mb-1">2º Passo: Cole a URL de redirecionamento ou o código:</label>
@@ -1087,6 +1130,7 @@ require_once __DIR__ . '/includes/header.php';
         </div>
 
         <form method="POST" action="" enctype="multipart/form-data" class="space-y-4 text-xs text-gray-300">
+            <?= csrf_field() ?>
             <input type="hidden" name="action" value="import_accounts">
             <p class="text-gray-400">
                 Selecione o arquivo <code>.json</code> exportado do seu localhost ou de outra instalação para restaurar todas as contas conectadas automaticamente:
@@ -1142,6 +1186,93 @@ function hideBadgeStatus(delay = 3000) {
             }, 300);
         }
     }, delay);
+}
+
+// Copia um texto para a área de transferência e dá feedback visual no próprio botão
+async function copyText(text, btnEl, okLabel) {
+    try {
+        if (navigator.clipboard && window.isSecureContext) {
+            await navigator.clipboard.writeText(text);
+        } else {
+            const ta = document.createElement('textarea');
+            ta.value = text;
+            ta.style.position = 'fixed';
+            ta.style.opacity = '0';
+            document.body.appendChild(ta);
+            ta.focus();
+            ta.select();
+            document.execCommand('copy');
+            document.body.removeChild(ta);
+        }
+        if (btnEl) {
+            const old = btnEl.innerHTML;
+            btnEl.innerHTML = '<i class="fa-solid fa-check text-[11px]"></i><span>' + (okLabel || 'Copiado!') + '</span>';
+            btnEl.classList.add('ring-2', 'ring-emerald-400/50');
+            setTimeout(() => {
+                btnEl.innerHTML = old;
+                btnEl.classList.remove('ring-2', 'ring-emerald-400/50');
+            }, 1600);
+        }
+    } catch (err) {
+        window.prompt('Copie o link manualmente (Ctrl+C):', text);
+    }
+    return false;
+}
+
+// Status self-contained da seção de banidas (funciona mesmo sem o pool badge)
+function setBannedRecheckStatus(html, type) {
+    const el = document.getElementById('bannedRecheckStatus');
+    if (!el) return;
+    el.classList.remove('hidden', 'text-emerald-300', 'text-rose-300', 'text-cyan-300');
+    if (type === 'success') el.classList.add('text-emerald-300');
+    else if (type === 'error') el.classList.add('text-rose-300');
+    else el.classList.add('text-cyan-300');
+    el.innerHTML = html;
+}
+
+// Verifica se contas banidas voltaram. accId = 0 reverifica TODAS as banidas.
+let isRecheckingBanned = false;
+async function recheckBanned(accId, btnEl) {
+    if (isRecheckingBanned) return false;
+    isRecheckingBanned = true;
+
+    const oldHtml = btnEl ? btnEl.innerHTML : '';
+    if (btnEl) {
+        btnEl.disabled = true;
+        btnEl.innerHTML = '<i class="fa-solid fa-circle-notch fa-spin text-[11px]"></i><span>Verificando...</span>';
+    }
+    setBannedRecheckStatus('<i class="fa-solid fa-circle-notch fa-spin text-[10px]"></i> Testando conta(s) banida(s) no Google...', 'loading');
+
+    try {
+        const url = accId > 0
+            ? `accounts.php?ajax_recheck_banned=1&account_id=${accId}`
+            : 'accounts.php?ajax_recheck_banned=1';
+        const res = await fetch(url, { cache: 'no-store' });
+        const data = await res.json();
+
+        if (data.success) {
+            const recovered = data.recoveredCount || 0;
+            const still = data.stillBannedCount || 0;
+            const total = data.totalChecked || 0;
+            if (recovered > 0) {
+                setBannedRecheckStatus(`<i class="fa-solid fa-circle-check text-[10px]"></i> ${recovered} conta(s) voltaram! ${still} ainda banida(s). Recarregando...`, 'success');
+                setTimeout(() => window.location.reload(), 1600);
+            } else {
+                setBannedRecheckStatus(`<i class="fa-solid fa-circle-xmark text-[10px]"></i> Nenhuma recuperada — ${still} de ${total} ainda banida(s).`, 'error');
+                if (btnEl) { btnEl.disabled = false; btnEl.innerHTML = oldHtml; }
+                isRecheckingBanned = false;
+            }
+        } else {
+            setBannedRecheckStatus('<i class="fa-solid fa-circle-exclamation text-[10px]"></i> ' + (data.error || 'Falha ao reverificar contas banidas.'), 'error');
+            if (btnEl) { btnEl.disabled = false; btnEl.innerHTML = oldHtml; }
+            isRecheckingBanned = false;
+        }
+    } catch (err) {
+        setBannedRecheckStatus('<i class="fa-solid fa-circle-exclamation text-[10px]"></i> Erro de conexão com o servidor Node.js.', 'error');
+        if (btnEl) { btnEl.disabled = false; btnEl.innerHTML = oldHtml; }
+        isRecheckingBanned = false;
+    }
+    return false;
 }
 
 // SISTEMA UNIFICADO DE SINCRONIZAÇÃO E VERIFICAÇÃO DE COTAS

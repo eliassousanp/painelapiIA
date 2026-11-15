@@ -496,6 +496,108 @@ app.all('/auth/antigravity/sync', async (req, res) => {
 });
 
 // -------------------------------------------------------------
+// ROTA PARA REVERIFICAR CONTAS BANIDAS (destrava automaticamente se o Google reabilitar)
+// Faz um probe real leve (1 token) em cada conta banida. Se a API Cloud Code responder
+// (2xx ou ate 429 de cota momentanea) a conta deixou de estar banida e volta para 'active'.
+// Se continuar 403/TOS_VIOLATION, permanece banida.
+// -------------------------------------------------------------
+app.all('/auth/antigravity/recheck-banned', async (req, res) => {
+  const clientIp = req.socket?.remoteAddress || req.ip || '';
+  const isLocal = clientIp === '127.0.0.1' || clientIp === '::1' || clientIp === '::ffff:127.0.0.1';
+  if (!isLocal && !req.headers['x-internal-secret'] && !req.query.token) {
+    return res.status(403).json({ error: 'Acesso negado: rota restrita ao painel local.' });
+  }
+
+  try {
+    const accountId = req.query.id || req.body?.account_id;
+    let query = "SELECT * FROM antigravity_accounts WHERE status = 'banned'";
+    let params = [];
+    if (accountId) {
+      query = "SELECT * FROM antigravity_accounts WHERE id = ? AND status = 'banned'";
+      params = [accountId];
+    }
+    const [accounts] = await pool.query(query, params);
+
+    const results = [];
+    for (const acc of accounts) {
+      let token = acc.access_token;
+      let tokenOk = true;
+
+      // 1. Renova o token OAuth. Se o refresh_token morreu, a conta precisa reautenticar.
+      try {
+        const refreshed = await refreshAccessToken(acc.refresh_token);
+        if (refreshed && refreshed.accessToken) {
+          token = refreshed.accessToken;
+          const newExpiresAt = new Date(Date.now() + 3600 * 1000);
+          await pool.query('UPDATE antigravity_accounts SET access_token = ?, token_expires_at = ? WHERE id = ?', [token, newExpiresAt, acc.id]);
+        }
+      } catch (e) {
+        tokenOk = false;
+      }
+
+      let recovered = false;
+      let detail = '';
+
+      if (!tokenOk) {
+        detail = 'Falha ao renovar o token (o refresh_token pode ter expirado). Reautentique a conta via Google.';
+      } else {
+        // 2. Probe real e barato contra a Cloud Code API.
+        try {
+          await generateContent(
+            token,
+            acc.project_id || 'aicode-consumers',
+            'gemini-3.8-flash-medium',
+            [{ role: 'user', parts: [{ text: '1' }] }],
+            '',
+            { maxOutputTokens: 1, thinkingBudget: 0 }
+          );
+          recovered = true;
+          detail = 'Conta reabilitada pelo Google! Status voltou para ativa.';
+        } catch (err) {
+          const status = err.status || 0;
+          const raw = (err.message || '').toLowerCase();
+          const reason = err.data?.error?.details?.[0]?.reason || '';
+          const isTos = status === 403 || reason === 'TOS_VIOLATION' || raw.includes('terms of service') || raw.includes('tos_violation') || raw.includes('permission_denied');
+
+          if (isTos) {
+            detail = 'Ainda banida pelo Google (403 TOS_VIOLATION).';
+          } else if (status === 429 || reason === 'QUOTA_EXHAUSTED' || raw.includes('quota') || raw.includes('exhausted')) {
+            // A conta respondeu (nao esta mais bloqueada), apenas sem cota neste instante.
+            recovered = true;
+            detail = 'Conta respondendo (429 cota momentanea) — ban removido, voltou para ativa.';
+          } else {
+            detail = `Nao foi possivel confirmar: ${reason || err.message || 'erro desconhecido'}`;
+          }
+        }
+      }
+
+      // 3. Se recuperou, destrava e ressincroniza as cotas reais.
+      if (recovered) {
+        await pool.query("UPDATE antigravity_accounts SET status = 'active' WHERE id = ?", [acc.id]);
+        try {
+          await syncSingleAccount({ ...acc, status: 'active', access_token: token }, true);
+        } catch (e) {
+          console.warn(`[Recheck Banned] Falha ao ressincronizar ${acc.email}:`, e.message);
+        }
+      }
+
+      results.push({ id: acc.id, email: acc.email, name: acc.name, stillBanned: !recovered, recovered, detail });
+    }
+
+    const recoveredCount = results.filter(r => r.recovered).length;
+    res.json({
+      success: true,
+      totalChecked: results.length,
+      recoveredCount,
+      stillBannedCount: results.length - recoveredCount,
+      results
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// -------------------------------------------------------------
 // ROTA PARA VERIFICACAO REAL DE COTA DO CLAUDE OPUS
 // -------------------------------------------------------------
 app.all('/auth/antigravity/verify-opus', async (req, res) => {
