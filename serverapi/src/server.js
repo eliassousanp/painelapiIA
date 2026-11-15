@@ -687,7 +687,7 @@ async function executeWithFallbackStream(targetEngine, contents, systemInstructi
 // -------------------------------------------------------------
 // EXECUÇÃO EM PROVEDORES EXTERNOS (ex: api.b.ai, OpenAI, etc)
 // -------------------------------------------------------------
-async function executeExternalProvider(providerId, targetEngine, incomingMessages, systemInstruction, rawTools = null) {
+async function executeExternalProvider(providerId, targetEngine, incomingMessages, systemInstruction, rawTools = null, maxTokens = undefined) {
   const [providers] = await pool.query('SELECT * FROM providers WHERE id = ?', [providerId]);
   if (providers.length === 0 || providers[0].status !== 'active') {
     throw new Error(`Provedor de IA (ID ${providerId}) não encontrado ou inativo.`);
@@ -737,6 +737,7 @@ async function executeExternalProvider(providerId, targetEngine, incomingMessage
     messages: messages,
     temperature: 0.7
   };
+  if (Number.isInteger(maxTokens) && maxTokens > 0) reqBody.max_tokens = maxTokens;
 
   if (rawTools && Array.isArray(rawTools) && rawTools.length > 0) {
     reqBody.tools = sanitizeToolsForProvider(rawTools);
@@ -814,7 +815,14 @@ async function executeExternalProvider(providerId, targetEngine, incomingMessage
     }
   }
 
-  return { replyText, toolCalls: extToolCalls, provider, account: null };
+  return { replyText, toolCalls: extToolCalls, provider, account: null, finishReason: json.choices?.[0]?.finish_reason };
+}
+
+function openAiFinishReason(reason, hasToolCalls) {
+  if (hasToolCalls) return 'tool_calls';
+  if (reason === 'MAX_TOKENS' || reason === 'max_tokens' || reason === 'length') return 'length';
+  if (reason === 'SAFETY' || reason === 'RECITATION' || reason === 'content_filter') return 'content_filter';
+  return 'stop';
 }
 
 // -------------------------------------------------------------
@@ -2100,6 +2108,7 @@ app.post(['/openai/deployments/:deployment/chat/completions', '/v1/chat/completi
     let replyText = '';
     let toolCalls = [];
     let account = null;
+    let upstreamFinishReason;
 
     if (req.body.stream) {
       res.setHeader('Content-Type', 'text/event-stream; charset=utf-8');
@@ -2125,9 +2134,10 @@ app.post(['/openai/deployments/:deployment/chat/completions', '/v1/chat/completi
       res.write(`data: ${JSON.stringify(startChunk)}\n\n`);
 
       if (providerId && providerId != 2) {
-        const extResult = await executeExternalProvider(providerId, targetEngine, incomingMessages, finalSystemInstruction, rawTools);
+        const extResult = await executeExternalProvider(providerId, targetEngine, incomingMessages, finalSystemInstruction, rawTools, req.body.max_tokens);
         replyText = extResult.replyText;
         toolCalls = extResult.toolCalls || [];
+        upstreamFinishReason = extResult.finishReason;
         if (replyText) {
           res.write(`data: ${JSON.stringify({
             id: compId,
@@ -2160,6 +2170,7 @@ app.post(['/openai/deployments/:deployment/chat/completions', '/v1/chat/completi
         account = acc;
         replyText = googleResp?.replyText || '';
         toolCalls = googleResp?.toolCalls || [];
+        upstreamFinishReason = googleResp?.response?.candidates?.[0]?.finishReason || googleResp?.candidates?.[0]?.finishReason;
         for (const tc of toolCalls) {
           if (tc.thoughtSignature) {
             saveThoughtSignature(tc.id, tc.name, tc.thoughtSignature);
@@ -2200,7 +2211,7 @@ app.post(['/openai/deployments/:deployment/chat/completions', '/v1/chat/completi
         choices: [{
           index: 0,
           delta: {},
-          finish_reason: hasToolCalls ? 'tool_calls' : 'stop'
+          finish_reason: openAiFinishReason(upstreamFinishReason, hasToolCalls)
         }]
       };
       res.write(`data: ${JSON.stringify(endChunk)}\n\n`);
@@ -2215,9 +2226,10 @@ app.post(['/openai/deployments/:deployment/chat/completions', '/v1/chat/completi
 
     if (providerId && providerId != 2) {
       // PROVEDOR EXTERNO (ex: api.b.ai)
-      const extResult = await executeExternalProvider(providerId, targetEngine, incomingMessages, finalSystemInstruction, rawTools);
+      const extResult = await executeExternalProvider(providerId, targetEngine, incomingMessages, finalSystemInstruction, rawTools, req.body.max_tokens);
       replyText = extResult.replyText;
       toolCalls = extResult.toolCalls || [];
+      upstreamFinishReason = extResult.finishReason;
     } else {
       // GOOGLE ANTIGRAVITY POOL COM SUPORTE A TOOLS
       const { googleResp, account: acc } = await executeWithFallback(targetEngine, contents, finalSystemInstruction, rawModel, customConfig);
@@ -2225,13 +2237,14 @@ app.post(['/openai/deployments/:deployment/chat/completions', '/v1/chat/completi
       const parsed = extractGeminiResponse(googleResp);
       replyText = parsed.replyText;
       toolCalls = parsed.toolCalls;
+      upstreamFinishReason = (googleResp?.response || googleResp)?.candidates?.[0]?.finishReason;
     }
 
     const inputTokens = Math.ceil(JSON.stringify(contents).length / 4);
     const outputTokens = Math.ceil((replyText.length + JSON.stringify(toolCalls).length) / 4);
     const compId = 'chatcmpl-' + crypto.randomBytes(12).toString('hex');
     const hasToolCalls = toolCalls.length > 0;
-    const finishReason = hasToolCalls ? 'tool_calls' : 'stop';
+    const finishReason = openAiFinishReason(upstreamFinishReason, hasToolCalls);
 
     const nonStreamOpenAiToolCalls = hasToolCalls ? toolCalls.map(tc => ({
       id: tc.id,
