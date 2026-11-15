@@ -712,6 +712,18 @@ ${toolsList}`;
     const pendingTtsPromises = [];
     let nextAudioToEmit = 0;
     const readyAudioMap = new Map();
+    // Estado de bloco de código (```), persistente entre as frases do streaming.
+    // Serve para NÃO enviar trechos de código para a voz (o TTS lia o código inteiro).
+    let ttsInsideCode = false;
+    function extractSpeakable(sentence) {
+      let out = '';
+      const parts = String(sentence || '').split('```');
+      for (let i = 0; i < parts.length; i++) {
+        if (!ttsInsideCode) out += parts[i];
+        if (i < parts.length - 1) ttsInsideCode = !ttsInsideCode; // alterna a cada cerca ```
+      }
+      return out;
+    }
 
     function emitOrderedAudioDeltas() {
       while (readyAudioMap.has(nextAudioToEmit)) {
@@ -733,8 +745,12 @@ ${toolsList}`;
 
     function dispatchSentenceForTTS(sentence) {
       if (!generateAudio || !sentence || sentence.length < 2 || isBrowserVoice) return;
+      // Remove trechos dentro de blocos de código ``` (o estado persiste entre frases do
+      // streaming). Assim a voz não lê código; o texto continua aparecendo na interface.
+      const speakable = extractSpeakable(sentence);
+      if (!speakable || speakable.trim().length < 2) return; // nada falável (ex.: linha de código)
       const sIdx = sentenceIndex++;
-      const p = generateTTS(sentence, voiceConfig.id, voiceRate, abortController.signal)
+      const p = generateTTS(speakable, voiceConfig.id, voiceRate, abortController.signal)
         .then(audioBase64 => {
           if (abortController.signal.aborted || ws.readyState !== 1) return;
           readyAudioMap.set(sIdx, { sIdx, sentence, audioBase64 });
@@ -1157,9 +1173,14 @@ function sendEvent(ws, type, data) {
 function cleanTextForSpeech(text) {
   if (!text) return '';
   return text
-    .replace(/\[([^\]]+)\]\([^\)]+\)/g, '$1') // remove links markdown [texto](url) -> texto
-    .replace(/https?:\/\/\S+/g, '')             // remove URLs puras
-    .replace(/[*_~`#>\-+]/g, ' ')                  // remove caracteres de formatação markdown (*, _, #, `, etc.)
+    .replace(/```[\s\S]*?```/g, ' ')            // remove blocos de código cercados (não fala o código)
+    .replace(/~~~[\s\S]*?~~~/g, ' ')            // idem com cerca ~~~
+    .replace(/`[^`]*`/g, ' ')                     // remove código inline INCLUSIVE o conteúdo
+    .replace(/<[^>\n]{1,200}>/g, ' ')             // remove tags/tokens tipo <div>, <system>, <tool_use> etc.
+    .replace(/\[([^\]]+)\]\([^\)]+\)/g, '$1')   // remove links markdown [texto](url) -> texto
+    .replace(/https?:\/\/\S+/g, '')              // remove URLs puras
+    .replace(/[*_~`#>\-+|]/g, ' ')                 // remove caracteres de formatação markdown (*, _, #, `, etc.)
+    .replace(/[\u{1F000}-\u{1FAFF}\u{2600}-\u{27BF}\u{FE00}-\u{FE0F}\u{1F1E6}-\u{1F1FF}\u{2190}-\u{21FF}\u{2B00}-\u{2BFF}]/gu, ' ') // remove emojis/símbolos
     .replace(/\s+/g, ' ')                          // normaliza espaços múltiplos
     .trim();
 }
