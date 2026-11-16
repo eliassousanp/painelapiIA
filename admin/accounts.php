@@ -985,6 +985,9 @@ require_once __DIR__ . '/includes/header.php';
                                                 <?php endif; ?>
                                             <?php endforeach; ?>
                                         <?php endif; ?>
+                                        <?php if (stripos($mKey, 'gemini') !== false && !array_filter($mQuota['quotaInfo']['buckets'] ?? [], static function ($bucket) { return isset($bucket['remainingAmount']) && preg_match('/^\d+$/', (string)$bucket['remainingAmount']); })): ?>
+                                            <div class="text-[10px] text-gray-400">Quantidade de tokens disponível não informada pelo Google.</div>
+                                        <?php endif; ?>
 
                                         <div class="bg-gray-950/70 px-2 py-1.5 rounded-xl border border-gray-800/80 text-xs" title="Estimativa do gateway para esta conta e modelo efetivamente atendido. Não é a cota em tokens do Google.">
                                             <span class="text-gray-400">Uso estimado registrado desde a atualização:</span>
