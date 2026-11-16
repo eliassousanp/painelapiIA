@@ -129,6 +129,7 @@ const accountPool = new AntigravityAccountPool(pool);
   } catch (e) {}
   try { await pool.query('ALTER TABLE usage_logs ADD COLUMN actual_model VARCHAR(100) DEFAULT NULL'); } catch (e) { if(e.code !== 'ER_DUP_FIELDNAME') console.error('Falha ao adicionar modelo efetivo ao histórico:', e.message); }
   try { await pool.query('ALTER TABLE usage_logs ADD COLUMN account_id INT DEFAULT NULL'); } catch (e) { if(e.code !== 'ER_DUP_FIELDNAME') console.error('Falha ao adicionar conta ao histórico:', e.message); }
+  try { await pool.query('ALTER TABLE provider_models ADD COLUMN free_catalog TINYINT(1) DEFAULT NULL'); } catch (e) { if(e.code !== 'ER_DUP_FIELDNAME') console.error('Falha ao adicionar classificação de modelos gratuitos:', e.message); }
 })();
 
 async function getSetting(key, defaultValue = '') {

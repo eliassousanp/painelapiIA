@@ -1,5 +1,6 @@
 <?php
 require_once __DIR__ . '/../config/helpers.php';
+require_once __DIR__ . '/../config/nvidia_free.php';
 requireAdmin();
 
 $db = getDB();
@@ -94,7 +95,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
                     }
                 }
 
-                $isAntigravity = (
+                $isAntigravity = !isNvidiaHostedProvider($provider) && (
                     $providerId == 2 ||
                     stripos($provider['name'], 'antigravity') !== false ||
                     stripos($provider['name'], 'google') !== false ||
@@ -154,10 +155,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
                             $ch = curl_init($epUrl);
                             curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
                             curl_setopt($ch, CURLOPT_TIMEOUT, 20);
-                            curl_setopt($ch, CURLOPT_FOLLOWLOCATION, true);
+                            curl_setopt($ch, CURLOPT_FOLLOWLOCATION, !isNvidiaHostedProvider($provider));
                             curl_setopt($ch, CURLOPT_MAXREDIRS, 3);
-                            curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, false);
-                            curl_setopt($ch, CURLOPT_SSL_VERIFYHOST, false);
+                            curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, isNvidiaHostedProvider($provider));
+                            curl_setopt($ch, CURLOPT_SSL_VERIFYHOST, isNvidiaHostedProvider($provider) ? 2 : 0);
                             curl_setopt($ch, CURLOPT_HTTPHEADER, [
                                 'Authorization: Bearer ' . $apiKey,
                                 'api-key: ' . $apiKey,
@@ -172,6 +173,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
                             if ($lastHttpCode === 200 && !empty($response)) {
                                 $json = json_decode($response, true);
                                 if (isset($json['data']) && is_array($json['data'])) {
+                                if (isNvidiaHostedProvider($provider) && !empty($json['has_more'])) { $curlErr='A lista NVIDIA tem páginas adicionais; a lista anterior foi preservada.'; break; }
                                     $fetchedData = $json['data'];
                                     break;
                                 } elseif (isset($json['models']) && is_array($json['models'])) {
@@ -198,7 +200,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
                         }
 
                         // Presets automáticos da NVIDIA NIM caso a rota /models da NVIDIA exija parâmetros adicionais ou falhe
-                        if (empty($importedModels) && $isNvidia) {
+                        if (empty($importedModels) && $isNvidia && !isNvidiaHostedProvider($provider)) {
                             $importedModels = [
                                 ['upstream' => 'meta/llama-3.3-70b-instruct', 'name' => 'Meta Llama 3.3 70B Instruct'],
                                 ['upstream' => 'nvidia/llama-3.1-nemotron-70b-instruct', 'name' => 'NVIDIA Llama 3.1 Nemotron 70B'],
@@ -211,7 +213,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
                         }
                     }
 
-                    if (!empty($importedModels)) {
+                    if (isNvidiaHostedProvider($provider) && !empty($importedModels)) {
+                        try {
+                            $freeModels=filterNvidiaFreeModels($importedModels,fetchNvidiaFreeKeys());
+                            saveNvidiaFreeModels($db,$providerId,$freeModels);
+                            $msg='Sincronizados '.count($freeModels).' modelos marcados como Free Endpoint no catálogo NVIDIA. A disponibilidade depende da chave e do serviço.';
+                        } catch (Throwable $e) { $error='Não foi possível confirmar os modelos gratuitos NVIDIA. A lista anterior foi preservada. '.$e->getMessage(); }
+                    } elseif (!empty($importedModels)) {
                         $savedCount = 0;
                         $stmtIns = $db->prepare("INSERT INTO provider_models (provider_id, upstream_model, name) VALUES (?, ?, ?) ON DUPLICATE KEY UPDATE name = VALUES(name)");
                         foreach ($importedModels as $imp) {
@@ -245,12 +253,17 @@ $providers = $stmtP->fetchAll();
 $providerModelsMap = [];
 foreach ($providers as $p) {
     $pId = $p['id'];
-    $stmtPM = $db->prepare("SELECT upstream_model, name FROM provider_models WHERE provider_id = ? ORDER BY id ASC");
-    $stmtPM->execute([$pId]);
-    $pModels = $stmtPM->fetchAll(PDO::FETCH_ASSOC);
+    try {
+        $query = isNvidiaHostedProvider($p) ? "SELECT upstream_model, name FROM provider_models WHERE provider_id = ? AND free_catalog = 1 ORDER BY id ASC" : "SELECT upstream_model, name FROM provider_models WHERE provider_id = ? ORDER BY id ASC";
+        $stmtPM = $db->prepare($query);$stmtPM->execute([$pId]);$pModels = $stmtPM->fetchAll(PDO::FETCH_ASSOC);
+    } catch (PDOException $e) {
+        if (!isNvidiaHostedProvider($p)) throw $e;
+        $pModels=[];
+        $error='O filtro de modelos gratuitos da NVIDIA ainda não está disponível no banco. Reinicie a API para aplicar a migração.';
+    }
 
     // Fallback caso ainda não tenha sincronizado o provedor
-    if (empty($pModels)) {
+    if (empty($pModels) && !isNvidiaHostedProvider($p)) {
         if ($pId == 2 || stripos($p['name'], 'antigravity') !== false) {
             $pModels = [
                 ['upstream_model' => 'gemini-3.8-flash-medium', 'name' => 'Gemini 3.8 Flash Medium'],
@@ -284,6 +297,7 @@ require_once __DIR__ . '/includes/header.php';
         <div>
             <h3 class="text-base font-bold text-white flex items-center"><i class="fa-solid fa-microchip text-purple-400 mr-2"></i> Modelos de IA & Pré-Prompts</h3>
             <p class="text-xs text-gray-400 mt-0.5">Associe cada modelo a um provedor específico e configure permissões e Realtime.</p>
+            <p class="text-xs text-gray-400 mt-1">Para a NVIDIA, a lista mostra somente modelos marcados como Free Endpoint na última sincronização. A disponibilidade depende da chave e do serviço.</p>
         </div>
         <div class="flex items-center gap-2">
             <button onclick="openSyncModal()" class="px-3.5 py-2 text-xs rounded-xl bg-purple-600/20 text-purple-300 border border-purple-500/30 hover:bg-purple-600/30 font-bold whitespace-nowrap transition flex items-center">
@@ -697,7 +711,7 @@ require_once __DIR__ . '/includes/header.php';
                 selectEl.appendChild(opt);
             });
             selectEl.classList.remove("hidden");
-        } else {
+        } else if (!provId) {
             // Mostra modelos de todos os provedores agrupados se nenhum provedor for filtrado
             providersList.forEach(p => {
                 const pModels = providerModelsMap[p.id] || [];
@@ -713,6 +727,9 @@ require_once __DIR__ . '/includes/header.php';
                     selectEl.appendChild(group);
                 }
             });
+            selectEl.classList.remove("hidden");
+        } else {
+            const option=document.createElement('option');option.value='';option.textContent='Nenhum modelo sincronizado; sincronize o provedor';option.disabled=true;selectEl.appendChild(option);
             selectEl.classList.remove("hidden");
         }
 
@@ -790,8 +807,6 @@ require_once __DIR__ . '/includes/header.php';
         document.getElementById("model_is_smart_routing").checked = (model.is_smart_routing == 1);
         let fastVal = model.routing_fast_model || "gemini-3.8-flash-medium";
         let medVal = model.routing_medium_model || "gemini-3.8-flash-medium";
-        if (fastVal.includes("2.5") || fastVal.includes("3.5") || fastVal.includes("3.6") || fastVal.includes("3.7")) fastVal = "gemini-3.8-flash-medium";
-        if (medVal.includes("2.5") || medVal.includes("3.5") || medVal.includes("3.6") || medVal.includes("3.7")) medVal = "gemini-3.8-flash-medium";
         const heavyVal = model.routing_heavy_model || "claude-opus-4-6-thinking";
         document.getElementById("model_routing_fast_model").value = fastVal;
         document.getElementById("model_routing_fast_multiplier").value = model.routing_fast_multiplier || "1.0";
@@ -820,9 +835,11 @@ require_once __DIR__ . '/includes/header.php';
             upSelect.value = model.upstream_model;
             document.getElementById("model_upstream_model").value = model.upstream_model;
         }
-        if (document.getElementById("select_routing_fast")) document.getElementById("select_routing_fast").value = fastVal;
-        if (document.getElementById("select_routing_medium")) document.getElementById("select_routing_medium").value = medVal;
-        if (document.getElementById("select_routing_heavy")) document.getElementById("select_routing_heavy").value = heavyVal;
+        for (const [id,value] of [['select_routing_fast',fastVal],['select_routing_medium',medVal],['select_routing_heavy',heavyVal]]) {
+            const select=document.getElementById(id);if(!select || !value)continue;
+            if(!Array.from(select.options).some(option=>option.value===value)) {const option=document.createElement('option');option.value=value;option.textContent=value+' (configurado anteriormente)';select.appendChild(option);}
+            select.value=value;
+        }
         document.getElementById("modelModal").classList.remove("hidden");
     }
 

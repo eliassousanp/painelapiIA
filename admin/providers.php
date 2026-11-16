@@ -1,5 +1,6 @@
 <?php
 require_once __DIR__ . '/../config/helpers.php';
+require_once __DIR__ . '/../config/nvidia_free.php';
 requireAdmin();
 
 $db = getDB();
@@ -135,10 +136,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
                         $ch = curl_init($epUrl);
                         curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
                         curl_setopt($ch, CURLOPT_TIMEOUT, 20);
-                        curl_setopt($ch, CURLOPT_FOLLOWLOCATION, true);
+                        curl_setopt($ch, CURLOPT_FOLLOWLOCATION, !isNvidiaHostedProvider($provider));
                         curl_setopt($ch, CURLOPT_MAXREDIRS, 3);
-                        curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, false);
-                        curl_setopt($ch, CURLOPT_SSL_VERIFYHOST, false);
+                        curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, isNvidiaHostedProvider($provider));
+                        curl_setopt($ch, CURLOPT_SSL_VERIFYHOST, isNvidiaHostedProvider($provider) ? 2 : 0);
                         curl_setopt($ch, CURLOPT_HTTPHEADER, [
                             'Authorization: Bearer ' . $apiKey,
                             'api-key: ' . $apiKey,
@@ -153,6 +154,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
                         if ($lastHttpCode === 200 && !empty($response)) {
                             $json = json_decode($response, true);
                             if (isset($json['data']) && is_array($json['data'])) {
+                                if (isNvidiaHostedProvider($provider) && !empty($json['has_more'])) { $curlErr='A lista NVIDIA tem páginas adicionais; a lista anterior foi preservada.'; break; }
                                 $fetchedData = $json['data'];
                                 break;
                             } elseif (isset($json['models']) && is_array($json['models'])) {
@@ -179,7 +181,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
                     }
 
                     // Presets oficiais NVIDIA NIM caso a rota /models da NVIDIA esteja restrita ou bloqueada
-                    if (empty($importedModels) && $isNvidia) {
+                    if (empty($importedModels) && $isNvidia && !isNvidiaHostedProvider($provider)) {
                         $importedModels = [
                             ['upstream' => 'meta/llama-3.3-70b-instruct', 'name' => 'Meta Llama 3.3 70B Instruct'],
                             ['upstream' => 'nvidia/llama-3.1-nemotron-70b-instruct', 'name' => 'NVIDIA Llama 3.1 Nemotron 70B'],
@@ -192,7 +194,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
                     }
                 }
 
-                if (!empty($importedModels)) {
+                if (isNvidiaHostedProvider($provider) && !empty($importedModels)) {
+                    try {
+                        $freeModels=filterNvidiaFreeModels($importedModels,fetchNvidiaFreeKeys());
+                        saveNvidiaFreeModels($db,$providerId,$freeModels);
+                        $msg='Sincronizados '.count($freeModels).' modelos marcados como Free Endpoint no catálogo NVIDIA. A disponibilidade depende da chave e do serviço.';
+                    } catch (Throwable $e) { $error='Não foi possível confirmar os modelos gratuitos NVIDIA. A lista anterior foi preservada. '.$e->getMessage(); }
+                } elseif (!empty($importedModels)) {
                     $savedCount = 0;
                     $stmtPM = $db->prepare("INSERT INTO provider_models (provider_id, upstream_model, name) VALUES (?, ?, ?) ON DUPLICATE KEY UPDATE name = VALUES(name)");
                     foreach ($importedModels as $imp) {

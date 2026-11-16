@@ -89,6 +89,7 @@ CREATE TABLE IF NOT EXISTS `provider_models` (
   `provider_id` INT NOT NULL,
   `upstream_model` VARCHAR(191) NOT NULL,
   `name` VARCHAR(191) NOT NULL,
+  `free_catalog` TINYINT(1) DEFAULT NULL,
   `updated_at` TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   UNIQUE KEY `unique_provider_model` (`provider_id`, `upstream_model`),
   FOREIGN KEY (`provider_id`) REFERENCES `providers`(`id`) ON DELETE CASCADE
