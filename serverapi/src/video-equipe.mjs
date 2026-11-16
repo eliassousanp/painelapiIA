@@ -1,29 +1,40 @@
 // A equipe só é acionada quando o cliente pede explicitamente o modo de produção.
-export async function produzirEmEquipe({pedido, executar, emitir=()=>{}, signal, anteriores={}}) {
+export async function produzirEmEquipe({pedido, executar, emitir=()=>{}, signal, anteriores={}, refazer=[]}) {
   if (!Array.isArray(pedido) || !pedido.length || typeof executar !== 'function') throw new Error('Pedido da equipe de vídeo inválido.');
   const etapas=['historia','personagens','cenario','direcao','montagem'];
   if (!anteriores || typeof anteriores!=='object' || Array.isArray(anteriores) || Object.entries(anteriores).some(([k,v])=>!etapas.includes(k) || typeof v!=='string' || !v.trim() || v.length>250000)) throw new Error('Etapas anteriores inválidas.');
   if (Object.keys(anteriores).some(k=>k!=='historia') && !anteriores.historia) throw new Error('A história anterior é necessária para retomar as outras etapas.');
   if (anteriores.montagem && !['personagens','cenario','direcao'].every(k=>anteriores[k])) throw new Error('A montagem anterior exige todas as etapas anteriores.');
-  const resultados={...anteriores}; let concluidas=Object.keys(resultados).length;
+  if (!Array.isArray(refazer) || refazer.some(k=>!etapas.includes(k))) throw new Error('Etapas para refazer inválidas.');
+  const resultados={...anteriores};
+  const invalidas=refazer.includes('historia') ? etapas : refazer.length ? [...refazer,'montagem'] : [];
+  for(const etapa of invalidas) delete resultados[etapa];
+  let concluidas=Object.keys(resultados).length;
   const evento=(etapa,estado,extra={})=>emitir({etapa,estado,concluidas,total:etapas.length,...extra});
   const trabalhar=async (etapa,instrucao,contexto) => {
     if(signal?.aborted)throw new Error('Produção cancelada.');
     if(resultados[etapa]) {evento(etapa,'recuperada');return resultados[etapa];}
-    evento(etapa,'iniciada');
+    const inicio=Date.now();evento(etapa,'iniciada');
     try {
       let tamanho=0;
-      const texto=await executar({etapa,instrucao,pedido,contexto,signal,onChunk:chunk=>{tamanho+=chunk.length;evento(etapa,'gerando',{caracteres:tamanho,trecho:chunk});}});
+      const texto=await executar({etapa,instrucao,pedido,contexto,signal,onChunk:chunk=>{if(signal?.aborted)return;tamanho+=chunk.length;evento(etapa,'gerando',{caracteres:tamanho,trecho:chunk});}});
+      if(signal?.aborted)throw new Error('Produção cancelada.');
       if(typeof texto!=='string' || !texto.trim())throw new Error(`A etapa ${etapa} não retornou conteúdo.`);
-      resultados[etapa]=texto;concluidas++;evento(etapa,'concluida',{caracteres:texto.length,resultado:texto});return texto;
-    } catch(e) {evento(etapa,'erro',{mensagem:String(e.message).slice(0,300)});throw e;}
+      resultados[etapa]=texto;concluidas++;evento(etapa,'concluida',{caracteres:texto.length,resultado:texto,duracao_ms:Date.now()-inicio});return texto;
+    } catch(e) {evento(etapa,'erro',{mensagem:String(e.message).slice(0,300),duracao_ms:Date.now()-inicio});throw e;}
   };
+  try {
   const historia=await trabalhar('historia','Crie a história e um plano compartilhado de cenas, continuidade, duração, tom e personagens. Este é um plano interno: registre decisões necessárias sem repetir o pedido nem fazer longas explicações. Não escreva código nesta etapa. Respeite o pedido e o formato desejado pelo cliente.',{});
-  const [personagens,cenario,direcao]=await Promise.all([
+  // Termine os trabalhos independentes já iniciados para preservar o que funcionou.
+  const planejamentos=await Promise.allSettled([
     trabalhar('personagens','Planeje personagens e elementos próprios consistentes com a história, incluindo aparência, proporções, expressões e ações. Entregue somente decisões úteis à montagem, sem repetir a história. Use as capacidades e o kit fornecidos no pedido. Não invente arquivos ou recursos.',{historia}),
     trabalhar('cenario','Planeje cenários e objetos necessários em cada cena, sua aparência, tamanho, posição e continuidade. Entregue somente decisões úteis à montagem, sem repetir a história. Use as capacidades e o kit fornecidos no pedido. Não invente arquivos ou recursos.',{historia}),
-    trabalhar('direcao','Planeje câmera, enquadramento, luz, tempo, som e ações visíveis em cada cena, observando a história e os recursos disponíveis. Em cada plano, posicione a câmera de modo que o personagem ativo fique inteiro no quadro, com margem, e com linha de visão livre (sem elemento de cenário entre a câmera e ele). Entregue somente decisões úteis à montagem, sem repetir a história.',{historia}),
+    trabalhar('direcao','Planeje câmera, enquadramento, luz, tempo, som e ações visíveis em cada cena, observando a história e os recursos disponíveis. Em cada plano, enquadre com margem os elementos necessários à ação, respeitando close-ups intencionais e a linha de visão. Use coordenadas e recursos reais do kit; não invente verificações ou ferramentas. Entregue somente decisões úteis à montagem, sem repetir a história.',{historia}),
   ]);
-  const final=await trabalhar('montagem','Integre os trabalhos anteriores. Responda exatamente no formato solicitado pelo cliente; se pedir código, devolva o código completo compatível com o motor e o kit fornecidos. Confira continuidade e limites, e inclua no código a verificação de enquadramento que roda: projete o personagem ativo em coordenadas de tela e reposicione a câmera se ele sair do quadro ou ficar atrás de um elemento, antes de entregar. Não alegue ter renderizado ou revisado quadros que não recebeu.',{historia,personagens,cenario,direcao});
+  const falha=planejamentos.find(r=>r.status==='rejected');
+  if(falha)throw falha.reason;
+  const [personagens,cenario,direcao]=planejamentos.map(r=>r.value);
+  const final=await trabalhar('montagem','Integre os trabalhos anteriores. Responda exatamente no formato solicitado pelo cliente; se pedir código, devolva o código completo compatível com o motor e o kit fornecidos. Confira continuidade, enquadramento e oclusão com os recursos reais do kit. Preserve os close-ups intencionais e respeite os limites de correção de câmera do diretor, sem loops ilimitados ou mudanças cumulativas por quadro. Não alegue ter renderizado ou revisado quadros que não recebeu.',{historia,personagens,cenario,direcao});
   return {resultado:final,etapas:resultados};
+  } catch(error) {error.etapas={...resultados};throw error;}
 }

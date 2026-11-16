@@ -1,7 +1,11 @@
 // A ordem parte da complexidade escolhida e tenta as alternativas configuradas.
 export async function selecionarModeloVideo(pool,requested) {
-  try {const [rows]=await pool.query("SELECT model_key FROM models WHERE is_video=1 AND status='active' ORDER BY id LIMIT 1");return rows[0]?.model_key || requested;}
-  catch(error) {if(error.code==='ER_BAD_FIELD_ERROR')return requested;throw error;}
+  let rows=[];
+  try {[rows]=await pool.query("SELECT model_key FROM models WHERE is_video=1 AND status='active' ORDER BY id LIMIT 1");}
+  catch(error) {if(error.code!=='ER_BAD_FIELD_ERROR')throw error;}
+  if(rows[0]?.model_key)return rows[0].model_key;
+  const error=new Error('Nenhum modelo de vídeo ativo está configurado. Selecione um modelo de vídeo no painel da API.');
+  error.code='VIDEO_MODEL_NOT_CONFIGURED';throw error;
 }
 
 export function ordenarRotas(routes,complexity) {

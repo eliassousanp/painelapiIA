@@ -1,4 +1,5 @@
 import https from 'https';
+import {StringDecoder} from 'node:string_decoder';
 
 // Agent HTTPS com Keep-Alive de alta performance para reutilização de conexões e latência ultrabaixa
 const keepAliveAgent = new https.Agent({
@@ -213,6 +214,12 @@ export function streamGenerateContent(accessToken, projectId, model, contents, s
     const postBody = JSON.stringify(payload);
     const parsed = new URL(`${DAILY_ENDPOINT}/v1internal:streamGenerateContent?alt=sse`);
 
+    let completed=false, emitted=false;
+    const rejectStream=error=>{
+      if(completed)return;completed=true;
+      const err=error instanceof Error ? error : new Error(String(error));
+      if(emitted)err.partialOutput=true;reject(err);
+    };
     const req = https.request({
       hostname: parsed.hostname,
       port: 443,
@@ -230,109 +237,95 @@ export function streamGenerateContent(accessToken, projectId, model, contents, s
         let errData = '';
         res.on('data', d => errData += d);
         res.on('end', () => {
-          let parsed = null;
+          if(completed)return;let parsed = null;
           try { parsed = JSON.parse(errData); } catch (e) {}
           const err = new Error(`CloudCode API Error (${res.statusCode}): ${errData}`);
           err.status = res.statusCode;
           err.statusCode = res.statusCode;
           err.data = parsed || { raw: errData };
-          reject(err);
+          rejectStream(err);
         });
+        res.on('error',rejectStream);
+        res.on('aborted',()=>rejectStream(new Error('Resposta de erro CloudCode interrompida.')));
         return;
       }
 
       let buffer = '';
       let fullReplyText = '';
       let fullCandidates = [];
-      let capturedToolCalls = [];
-
+      let usageMetadata;
+      const capturedToolCalls = [];
+      const decoder = new StringDecoder('utf8');
+      let failed = false;
+      const fail = error => {
+        if (failed) return;
+        failed = true;
+        const err = error instanceof Error ? error : new Error(String(error));
+        if (fullReplyText || capturedToolCalls.length) err.partialOutput = true;
+        rejectStream(err);
+        req.destroy();
+      };
+      const processLine = line => {
+        const trimmed=line.trim();
+        if(!trimmed.startsWith('data:'))return;
+        const jsonStr=trimmed.slice(5).trim();
+        if(!jsonStr || jsonStr==='[DONE]')return;
+        let parsedChunk;
+        try {parsedChunk=JSON.parse(jsonStr);} catch {throw new Error('CloudCode enviou evento de transmissão JSON inválido.');}
+        const actualResp=parsedChunk.response || parsedChunk;
+        if(actualResp.usageMetadata)usageMetadata=actualResp.usageMetadata;
+        const candidate=actualResp?.candidates?.[0];
+        let chunkSig=candidate?.thoughtSignature || candidate?.thought_signature;
+        if(candidate?.content?.parts) for(const p of candidate.content.parts) {
+          if(p.thoughtSignature || p.thought_signature)chunkSig=p.thoughtSignature || p.thought_signature;
+          if(p.thought) {if(typeof onChunk==='function')onChunk(null,null,{thinking:true,thought:p.text || ''});continue;}
+          if(p.text) {fullReplyText+=p.text;emitted=true;if(typeof onChunk==='function')onChunk(p.text,null);}
+          if(p.functionCall) {
+            const sig=p.thoughtSignature || p.thought_signature || p.functionCall?.thoughtSignature || p.functionCall?.thought_signature || chunkSig;
+            const callObj={name:p.functionCall.name,args:p.functionCall.args || {},id:p.functionCall.id || ('call_'+Math.random().toString(36).substring(2,10)),thoughtSignature:sig};
+            capturedToolCalls.push(callObj);emitted=true;if(typeof onChunk==='function')onChunk(null,callObj);
+          }
+        }
+        if(candidate)fullCandidates=[candidate];
+      };
       res.on('data', chunk => {
-        req.setTimeout(600000); // Reseta o timeout de 10 minutos sempre que novos dados chegam
-        if (abortSignal?.aborted) {
-          req.destroy();
-          return;
-        }
-
-        buffer += chunk.toString();
-        const lines = buffer.split('\n');
-        buffer = lines.pop() || '';
-
-        for (const line of lines) {
-          const trimmed = line.trim();
-          if (!trimmed.startsWith('data:')) continue;
-          const jsonStr = trimmed.slice(5).trim();
-          if (!jsonStr || jsonStr === '[DONE]') continue;
-
-          try {
-            const parsedChunk = JSON.parse(jsonStr);
-            const actualResp = parsedChunk.response || parsedChunk;
-            const candidate = actualResp?.candidates?.[0];
-            let chunkSig = candidate?.thoughtSignature || candidate?.thought_signature;
-
-            if (candidate?.content?.parts) {
-              for (const p of candidate.content.parts) {
-                if (p.thoughtSignature || p.thought_signature) {
-                  chunkSig = p.thoughtSignature || p.thought_signature;
-                }
-                if (p.thought) {
-                  if (typeof onChunk === 'function') {
-                    onChunk(null, null, { thinking: true, thought: p.text || '' });
-                  }
-                  continue;
-                }
-                if (p.text) {
-                  fullReplyText += p.text;
-                  if (typeof onChunk === 'function') {
-                    onChunk(p.text, null);
-                  }
-                }
-                if (p.functionCall) {
-                  const sig = p.thoughtSignature || p.thought_signature || p.functionCall?.thoughtSignature || p.functionCall?.thought_signature || chunkSig;
-                  const callObj = {
-                    name: p.functionCall.name,
-                    args: p.functionCall.args || {},
-                    id: p.functionCall.id || ('call_' + Math.random().toString(36).substring(2, 10)),
-                    thoughtSignature: sig
-                  };
-                  capturedToolCalls.push(callObj);
-                  if (typeof onChunk === 'function') {
-                    onChunk(null, callObj);
-                  }
-                }
-              }
-            }
-            if (candidate) {
-              fullCandidates = [candidate];
-            }
-          } catch (e) { }
-        }
+        if(failed)return;
+        req.setTimeout(600000);
+        if(abortSignal?.aborted) {req.destroy();return;}
+        try {
+          buffer+=decoder.write(Buffer.isBuffer(chunk)?chunk:Buffer.from(chunk));
+          const lines=buffer.split('\n');buffer=lines.pop() || '';
+          for(const line of lines)processLine(line);
+        } catch(error) {fail(error);}
       });
-
       res.on('end', () => {
-        resolve({
-          replyText: fullReplyText,
-          toolCalls: capturedToolCalls,
-          candidates: fullCandidates,
-          response: { candidates: fullCandidates }
-        });
+        if(failed)return;
+        try {
+          buffer+=decoder.end();
+          if(buffer)processLine(buffer);
+          completed=true;resolve({replyText:fullReplyText,toolCalls:capturedToolCalls,candidates:fullCandidates,usageMetadata,response:{candidates:fullCandidates,usageMetadata}});
+        } catch(error) {fail(error);}
       });
+      res.on('error',fail);
+      res.on('aborted',()=>fail(new Error('Transmissão CloudCode interrompida antes do fim.')));
     });
 
     if (abortSignal) {
       abortSignal.addEventListener('abort', () => {
         req.destroy();
-        resolve({ replyText: '', toolCalls: [], aborted: true });
+        if(!completed){completed=true;resolve({ replyText: '', toolCalls: [], aborted: true });}
       });
     }
 
     req.on('error', err => {
       if (abortSignal?.aborted) {
-        resolve({ replyText: '', toolCalls: [], aborted: true });
+        if(!completed){completed=true;resolve({ replyText: '', toolCalls: [], aborted: true });}
       } else {
-        reject(err);
+        rejectStream(err);
       }
     });
 
+    if (abortSignal?.aborted) {req.destroy();if(!completed){completed=true;resolve({replyText:'',toolCalls:[],aborted:true});}return;}
     req.setTimeout(600000, () => req.destroy(new Error('Timeout de stream com a Google CloudCode API (600s)')));
     req.write(postBody);
     req.end();

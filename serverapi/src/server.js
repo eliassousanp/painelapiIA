@@ -28,6 +28,8 @@ import {
 } from './whatsapp_baileys.js';
 import AntigravityAccountPool from './services/account_pool.js';
 import { produzirEmEquipe } from './video-equipe.mjs';
+import { createVideoStreamFilter } from './video-stream-filter.mjs';
+import { validarTerminoVideo } from './video-resposta.mjs';
 
 import fs from 'fs';
 
@@ -675,15 +677,15 @@ async function getAvailableAccount() {
 }
 
 // Executa a requisição com fila inteligente, controle de RPM e failover automático entre contas
-async function executeWithFallback(targetEngine, contents, systemInstruction, rawModel, customConfig = null) {
-  return await accountPool.executeWithFallback(targetEngine, contents, systemInstruction, rawModel, customConfig);
+async function executeWithFallback(targetEngine, contents, systemInstruction, rawModel, customConfig = null, options = {}) {
+  return await accountPool.executeWithFallback(targetEngine, contents, systemInstruction, rawModel, customConfig, options);
 }
 
 /**
  * Executa requisição com fallback usando streaming direto do Google CloudCode (SSE) com controle de RPM
  */
-async function executeWithFallbackStream(targetEngine, contents, systemInstruction, requestedModel, customConfig, onChunk, abortSignal, accountWaitMs) {
-  return await accountPool.executeWithFallbackStream(targetEngine, contents, systemInstruction, requestedModel, customConfig, onChunk, abortSignal, accountWaitMs);
+async function executeWithFallbackStream(targetEngine, contents, systemInstruction, requestedModel, customConfig, onChunk, abortSignal, accountWaitMs, options = {}) {
+  return await accountPool.executeWithFallbackStream(targetEngine, contents, systemInstruction, requestedModel, customConfig, onChunk, abortSignal, accountWaitMs, options);
 }
 
 
@@ -759,6 +761,7 @@ async function executeExternalProvider(providerId, targetEngine, incomingMessage
       signal: streamOptions?.signal ? AbortSignal.any([streamOptions.signal,AbortSignal.timeout(600000)]) : AbortSignal.timeout(600000)
     });
   } catch (netErr) {
+    if(streamOptions?.signal?.aborted)throw netErr;
     // Se falhou e tinha /v1 adicionado automaticamente, tenta fallback para /chat/completions puro
     if (endpoint.endsWith('/v1/chat/completions')) {
       const altEndpoint = baseUrl + '/chat/completions';
@@ -771,7 +774,7 @@ async function executeExternalProvider(providerId, targetEngine, incomingMessage
             'User-Agent': 'BRLoveAPI-Gateway/5.0'
           },
           body: JSON.stringify(reqBody),
-          signal: AbortSignal.timeout(600000)
+          signal: streamOptions?.signal ? AbortSignal.any([streamOptions.signal,AbortSignal.timeout(600000)]) : AbortSignal.timeout(600000)
         });
         endpoint = altEndpoint;
       } catch (altErr) {
@@ -860,8 +863,8 @@ async function executeExternalProvider(providerId, targetEngine, incomingMessage
   throw last || new Error(`Nenhuma chave disponível para o provedor ${provider.name}.`);
 }
 
-async function executeSmartRoutes(routes,{messages,contents,system,rawModel,config,tools,maxTokens,stream=false,onChunk=()=>{},signal,accountWaitMs=60000}) {
-  return tentarRotas(routes,async route=>{
+async function executeSmartRoutes(routes,{messages,contents,system,rawModel,config,tools,maxTokens,stream=false,onChunk=()=>{},signal,accountWaitMs=60000,oneRoute=false}) {
+  return tentarRotas(oneRoute ? routes.slice(0,1) : routes,async route=>{
     let emitted=false;
     try {
       if(!route.providerId)throw new Error(`Provedor não identificado para ${route.model}; edite o roteamento e selecione o provedor.`);
@@ -873,7 +876,7 @@ async function executeSmartRoutes(routes,{messages,contents,system,rawModel,conf
       }
       if(stream) {
         const out=await accountPool.executeWithFallbackStream(route.model,contents,system,rawModel,config,chunk=>{if(chunk){emitted=true;onChunk(chunk);}},signal,accountWaitMs,{strict:true});
-        const response=out.googleResp;if(!response?.replyText && !response?.toolCalls?.length) {const error=new Error('Resposta vazia do modelo.');error.status=503;throw error;}return {replyText:response?.replyText || '',toolCalls:response?.toolCalls || [],finishReason:response?.response?.candidates?.[0]?.finishReason || response?.candidates?.[0]?.finishReason,account:out.account,usedModel:out.usedModel || route.model};
+        const response=out.googleResp;if(!response?.replyText && !response?.toolCalls?.length) {const error=new Error('Resposta vazia do modelo.');error.status=503;throw error;}return {replyText:response?.replyText || '',toolCalls:response?.toolCalls || [],finishReason:response?.response?.candidates?.[0]?.finishReason || response?.candidates?.[0]?.finishReason,usageMetadata:response?.usageMetadata,account:out.account,usedModel:out.usedModel || route.model};
       }
       const out=await accountPool.executeWithFallback(route.model,contents,system,rawModel,config,{strict:true});
       const parsed=extractGeminiResponse(out.googleResp);if(!parsed.replyText && !parsed.toolCalls?.length) {const error=new Error('Resposta vazia do modelo.');error.status=503;throw error;}return {...parsed,finishReason:(out.googleResp?.response || out.googleResp)?.candidates?.[0]?.finishReason,account:out.account,usedModel:out.usedModel || route.model};
@@ -1046,13 +1049,13 @@ export function normalizeAntigravityModel(model) {
   return model;
 }
 
-async function resolveModelConfig(requestedModel, incomingContents = []) {
+async function resolveModelConfig(requestedModel, incomingContents = [], {videoOnly=false}={}) {
   const cleanModel = (requestedModel || '').replace(/[^\w.\/-]/g, '');
   const now = Date.now();
 
   let row = null;
   const cachedModel = modelConfigCache.get(cleanModel) || modelConfigCache.get(requestedModel);
-  if (cachedModel && cachedModel.expiresAt > now) {
+  if (!videoOnly && cachedModel && cachedModel.expiresAt > now) {
     row = cachedModel.row;
   } else {
     let [rows] = await pool.query(`
@@ -1062,7 +1065,7 @@ async function resolveModelConfig(requestedModel, incomingContents = []) {
       LIMIT 1
     `, [cleanModel, requestedModel, cleanModel]);
 
-    if (rows.length === 0) {
+    if (rows.length === 0 && !videoOnly) {
       const baseKey = cleanModel.split('-202')[0].replace('-latest', '');
       [rows] = await pool.query(`
         SELECT *
@@ -1081,7 +1084,9 @@ async function resolveModelConfig(requestedModel, incomingContents = []) {
 
   const globalPrePrompt = await getSetting('pre_prompt', '');
 
+  if(videoOnly && (!row || row.is_video != 1 || row.model_key !== requestedModel)) throw new Error('O modelo de vídeo configurado não está mais disponível.');
   if (row) {
+    if(videoOnly && row.is_smart_routing != 1 && (!String(row.upstream_model || '').trim() || !row.provider_id)) throw new Error('Configure o modelo upstream e o provedor de vídeo, ou habilite e configure o roteamento inteligente.');
     const modelPrompt = row.pre_prompt ? row.pre_prompt.trim() : '';
     const combinedPrompt = [globalPrePrompt, modelPrompt].filter(Boolean).join('\n\n');
 
@@ -1129,6 +1134,7 @@ async function resolveModelConfig(requestedModel, incomingContents = []) {
         routes[tier]={model,providerId:id,multiplier:parseFloat(row[`routing_${tier}_multiplier`]) || 1};
       }
       routeCandidates=ordenarRotas(routes,complexity);
+      if(videoOnly && !routeCandidates.length)throw new Error('O roteamento de vídeo está ativo, mas não possui modelos configurados.');
       if(routeCandidates.length) {chosenEngine=routeCandidates[0].model;chosenMultiplier=routeCandidates[0].multiplier;}
 
       if (!routeCandidates.length && complexity === 'fast' && row.routing_fast_model) {
@@ -1588,7 +1594,7 @@ function stripThinking(text) {
   return cleaned.trim();
 }
 
-function extractGeminiResponse(googleResp) {
+function extractGeminiResponse(googleResp, {preserveWhitespace=false}={}) {
   const actualResp = googleResp?.response || googleResp;
   const candidates = actualResp?.candidates || [];
   let replyText = '';
@@ -1621,7 +1627,7 @@ function extractGeminiResponse(googleResp) {
     }
   }
 
-  replyText = stripThinking(replyText);
+  replyText = preserveWhitespace ? createVideoStreamFilter()(replyText,true) : stripThinking(replyText);
   return { replyText, toolCalls };
 }
 
@@ -2184,20 +2190,24 @@ app.post(['/v1/messages', '/messages'], async (req, res) => {
 // -------------------------------------------------------------
 // ENDPOINT OPENAI E AZURE COMPATÍVEL (/v1/chat/completions)
 // -------------------------------------------------------------
+// Obs.: o /v1/video exige CÓDIGO puro. Se o modelo de vídeo for de raciocínio,
+// ele pode vazar <thinking>…</thinking> antes do código e quebrar o parser do
+// diretor — por isso aplicamos stripThinking() (definido acima) só na rota de vídeo.
 app.post(['/openai/deployments/:deployment/chat/completions', '/v1/chat/completions', '/chat/completions', '/v1/video', '/video'], async (req, res) => {
   const userKey = await authenticateClient(req, res);
   if (!userKey) return;
 
   let rawModel = req.body.model || req.params.deployment || 'Realtime';
-  if(req.path==='/v1/video' || req.path==='/video') {
+  const isVideo = req.path === '/v1/video' || req.path === '/video';
+  if(isVideo) {
     try {rawModel=await selecionarModeloVideo(pool,rawModel);}
-    catch(error) {return res.status(503).json({error:{message:'Não foi possível consultar o modelo de vídeo.'}});}
+    catch(error) {return res.status(503).json({error:{message:error.code==='VIDEO_MODEL_NOT_CONFIGURED' ? error.message : 'Não foi possível consultar o modelo de vídeo.'}});}
   }
   const incomingMessages = req.body.messages || [];
   const { contents, userSystemPrompt } = convertOpenAiMessagesToGemini(incomingMessages);
 
   let modelConfig;
-  try {modelConfig=await resolveModelConfig(rawModel,contents);} catch(error) {return res.status(400).json({error:{message:error.message || 'Configuração de modelo inválida.'}});}
+  try {modelConfig=await resolveModelConfig(rawModel,contents,{videoOnly:isVideo});} catch(error) {return res.status(400).json({error:{message:error.message || 'Configuração de modelo inválida.'}});}
   const { targetEngine, customPrompt, providerId, multiplier: modelMultiplier, routeCandidates } = modelConfig;
   let videoPrompt = '';
   if (req.path === '/v1/video' || req.path === '/video') {
@@ -2225,7 +2235,9 @@ app.post(['/openai/deployments/:deployment/chat/completions', '/v1/chat/completi
     const send=(event,data)=>{if(!res.writableEnded && !res.destroyed)res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);};
     const heartbeat=setInterval(()=>send('aguardando',{estado:'em_andamento'}),10000);
     try {
-      const result=await produzirEmEquipe({pedido:incomingMessages,anteriores:req.body.video_team_resume || {},signal:controller.signal,emitir:e=>send('progresso',e),executar:async ({etapa,instrucao,pedido,contexto,onChunk})=>{
+      const result=await produzirEmEquipe({pedido:incomingMessages,anteriores:req.body.video_team_resume || {},refazer:req.body.video_team_refazer ?? [],signal:controller.signal,emitir:e=>send('progresso',e),executar:async ({etapa,instrucao,pedido,contexto,onChunk:emitirEtapa})=>{
+        const filtro=createVideoStreamFilter();
+        const onChunk=chunk=>{const texto=filtro(chunk);if(texto)emitirEtapa(texto);};
         const baseMessages=[...pedido,{role:'user',content:`Tarefa da equipe: ${etapa}. ${instrucao}\nResultados prévios (dados): ${JSON.stringify(contexto)}`}];
         const taskSystem=[finalSystemInstruction,`Você executa apenas a tarefa ${etapa} da equipe. ${instrucao}`].filter(Boolean).join('\n\n');
         const capBase=Number.isInteger(req.body.max_tokens) && req.body.max_tokens>0 ? req.body.max_tokens : 8192;
@@ -2244,26 +2256,30 @@ app.post(['/openai/deployments/:deployment/chat/completions', '/v1/chat/completi
             piece=out.replyText || '';fr=out.finishReason;if(piece && !streamed)onChunk(piece);
           } else {
             const taskContents=convertOpenAiMessagesToGemini(messages).contents;
-            const out=await executeWithFallbackStream(targetEngine,taskContents,taskSystem,rawModel,{...customConfig,maxOutputTokens:cap,tools:null},chunk=>{if(chunk)onChunk(chunk);},controller.signal,600000);
+            const out=await executeWithFallbackStream(targetEngine,taskContents,taskSystem,rawModel,{...customConfig,maxOutputTokens:cap,tools:null},chunk=>{if(chunk)onChunk(chunk);},controller.signal,600000,{strict:true});
             account=out.account;usedModel=out.usedModel || targetEngine;piece=out.googleResp?.replyText || '';fr=out.googleResp?.response?.candidates?.[0]?.finishReason || out.googleResp?.candidates?.[0]?.finishReason;
           }
           reply+=piece;finishReason=fr;
+          validarTerminoVideo(fr,{allowLength:true});
           if(openAiFinishReason(fr,false)!=='length')break;
           if(parte<maxPartes-1)messages.push({role:'assistant',content:piece},{role:'user',content:'A resposta foi cortada. Continue exatamente de onde parou, sem repetir nada e sem explicações.'});
         }
         await logUsage(userKey,rawModel,Math.ceil(JSON.stringify(baseMessages).length/4),Math.ceil(reply.length/4),account?.id || null,usedMultiplier,usedModel);
         if(openAiFinishReason(finishReason,false)==='length') throw new Error(`A etapa ${etapa} foi cortada após ${maxPartes} partes.`);
-        return reply;
+        const restante=filtro('',true);if(restante)emitirEtapa(restante);
+        send('progresso',{etapa,estado:'modelo_utilizado',modelo:usedModel,configuracao:rawModel});
+        return createVideoStreamFilter()(reply,true);
       }});
-      send('resultado',{resultado:result.resultado});
+      send('resultado',{resultado:result.resultado,video:{configured_model:rawModel}});
       if(!res.writableEnded)res.end();
     } catch(error) {
-      controller.abort();send('erro',{message:String(error.message || error).slice(0,500)});if(!res.writableEnded)res.end();
+      controller.abort();send('erro',{message:String(error.message || error).slice(0,500),code:error.code,etapas:error.etapas || {}});if(!res.writableEnded)res.end();
     } finally {clearInterval(heartbeat);}
     return;
   }
 
 
+  let emittedVideoOutput=false;
   try {
     let replyText = '';
     let toolCalls = [];
@@ -2271,6 +2287,8 @@ app.post(['/openai/deployments/:deployment/chat/completions', '/v1/chat/completi
     let usedModel = targetEngine;
     let upstreamFinishReason;
     let usedMultiplier = modelMultiplier;
+    let usedProviderId = providerId;
+    let videoUsage;
 
     if (req.body.stream) {
       res.setHeader('Content-Type', 'text/event-stream; charset=utf-8');
@@ -2278,6 +2296,12 @@ app.post(['/openai/deployments/:deployment/chat/completions', '/v1/chat/completi
       res.setHeader('Connection', 'keep-alive');
 
       const compId = 'chatcmpl-' + crypto.randomBytes(12).toString('hex');
+      const filtrarVideo=isVideo ? createVideoStreamFilter() : null;
+      const emitirConteudo=(chunk,final=false)=>{
+        const texto=filtrarVideo ? filtrarVideo(chunk || '',final) : chunk;
+        if(texto && isVideo)emittedVideoOutput=true;
+        if(texto)res.write(`data: ${JSON.stringify({id:compId,object:'chat.completion.chunk',created:Math.floor(Date.now()/1000),model:rawModel,choices:[{index:0,delta:{content:texto},finish_reason:null}]})}\n\n`);
+      };
       const abortController = new AbortController();
       res.on('close', () => { if (!res.writableEnded) abortController.abort(); });
       const heartbeat=setInterval(()=>{if(!res.destroyed && !res.writableEnded)res.write(': aguardando\n\n');},15000);
@@ -2299,23 +2323,17 @@ app.post(['/openai/deployments/:deployment/chat/completions', '/v1/chat/completi
       res.write(`data: ${JSON.stringify(startChunk)}\n\n`);
 
       if (routeCandidates?.length) {
-        const emitChunk=textChunk=>{if(textChunk)res.write(`data: ${JSON.stringify({id:compId,object:'chat.completion.chunk',created:Math.floor(Date.now()/1000),model:rawModel,choices:[{index:0,delta:{content:textChunk},finish_reason:null}]})}\n\n`);};
+        const emitChunk=textChunk=>emitirConteudo(textChunk);
         const out=await executeSmartRoutes(routeCandidates,{messages:incomingMessages,contents,system:finalSystemInstruction,rawModel,config:customConfig,tools:rawTools,maxTokens:req.body.max_tokens,stream:true,onChunk:emitChunk,signal:abortController.signal});
-        replyText=out.replyText;toolCalls=out.toolCalls;account=out.account;usedModel=out.usedModel;upstreamFinishReason=out.finishReason;usedMultiplier=out.route.multiplier;
+        replyText=out.replyText;toolCalls=out.toolCalls;account=out.account;usedModel=out.usedModel;upstreamFinishReason=out.finishReason;usedMultiplier=out.route.multiplier;usedProviderId=out.route.providerId;videoUsage=out.usageMetadata;
       } else if (providerId && providerId != 2) {
         let streamed=false;
-        const extResult = await executeExternalProvider(providerId, targetEngine, incomingMessages, finalSystemInstruction, rawTools, req.body.max_tokens, {signal:abortController.signal,onChunk:chunk=>{streamed=true;res.write(`data: ${JSON.stringify({id:compId,object:'chat.completion.chunk',created:Math.floor(Date.now()/1000),model:rawModel,choices:[{index:0,delta:{content:chunk},finish_reason:null}]})}\n\n`);}});
+        const extResult = await executeExternalProvider(providerId, targetEngine, incomingMessages, finalSystemInstruction, rawTools, req.body.max_tokens, {signal:abortController.signal,onChunk:chunk=>{streamed=true;emitirConteudo(chunk);}});
         replyText = extResult.replyText;
         toolCalls = extResult.toolCalls || [];
         upstreamFinishReason = extResult.finishReason;
         if (replyText && !streamed) {
-          res.write(`data: ${JSON.stringify({
-            id: compId,
-            object: 'chat.completion.chunk',
-            created: Math.floor(Date.now() / 1000),
-            model: rawModel,
-            choices: [{ index: 0, delta: { content: replyText }, finish_reason: null }]
-          })}\n\n`);
+          emitirConteudo(replyText);
         }
       } else {
         const { googleResp, account: acc, usedModel: selectedModel } = await executeWithFallbackStream(
@@ -2324,24 +2342,17 @@ app.post(['/openai/deployments/:deployment/chat/completions', '/v1/chat/completi
           finalSystemInstruction,
           rawModel,
           customConfig,
-          (textChunk) => {
-            if (textChunk) {
-              res.write(`data: ${JSON.stringify({
-                id: compId,
-                object: 'chat.completion.chunk',
-                created: Math.floor(Date.now() / 1000),
-                model: rawModel,
-                choices: [{ index: 0, delta: { content: textChunk }, finish_reason: null }]
-              })}\n\n`);
-            }
-          },
-          abortController.signal
+          (textChunk) => emitirConteudo(textChunk),
+          abortController.signal,
+          undefined,
+          {strict:isVideo}
         );
         account = acc;
         usedModel = selectedModel || targetEngine;
         replyText = googleResp?.replyText || '';
         toolCalls = googleResp?.toolCalls || [];
         upstreamFinishReason = googleResp?.response?.candidates?.[0]?.finishReason || googleResp?.candidates?.[0]?.finishReason;
+        videoUsage = googleResp?.usageMetadata;
         for (const tc of toolCalls) {
           if (tc.thoughtSignature) {
             saveThoughtSignature(tc.id, tc.name, tc.thoughtSignature);
@@ -2349,6 +2360,8 @@ app.post(['/openai/deployments/:deployment/chat/completions', '/v1/chat/completi
         }
       }
 
+      if(isVideo)validarTerminoVideo(upstreamFinishReason,{allowLength:true,hasToolCalls:toolCalls.length>0});
+      if(filtrarVideo)emitirConteudo('',true);
       const hasToolCalls = toolCalls.length > 0;
       if (hasToolCalls) {
         const streamOpenAiToolCalls = toolCalls.map((tc, idx) => ({
@@ -2377,6 +2390,7 @@ app.post(['/openai/deployments/:deployment/chat/completions', '/v1/chat/completi
       const endChunk = {
         id: compId,
         object: 'chat.completion.chunk',
+        ...(isVideo ? {video:{upstream_model:usedModel,provider_id:usedProviderId,...(videoUsage ? {upstream_usage:videoUsage} : {})}} : {}),
         created: Math.floor(Date.now() / 1000),
         model: rawModel,
         choices: [{
@@ -2397,7 +2411,7 @@ app.post(['/openai/deployments/:deployment/chat/completions', '/v1/chat/completi
 
     if (routeCandidates?.length) {
       const out=await executeSmartRoutes(routeCandidates,{messages:incomingMessages,contents,system:finalSystemInstruction,rawModel,config:customConfig,tools:rawTools,maxTokens:req.body.max_tokens});
-      replyText=out.replyText;toolCalls=out.toolCalls;account=out.account;usedModel=out.usedModel;upstreamFinishReason=out.finishReason;usedMultiplier=out.route.multiplier;
+      replyText=out.replyText;toolCalls=out.toolCalls;account=out.account;usedModel=out.usedModel;upstreamFinishReason=out.finishReason;usedMultiplier=out.route.multiplier;usedProviderId=out.route.providerId;
     } else if (providerId && providerId != 2) {
       // PROVEDOR EXTERNO (ex: api.b.ai)
       const extResult = await executeExternalProvider(providerId, targetEngine, incomingMessages, finalSystemInstruction, rawTools, req.body.max_tokens);
@@ -2406,15 +2420,19 @@ app.post(['/openai/deployments/:deployment/chat/completions', '/v1/chat/completi
       upstreamFinishReason = extResult.finishReason;
     } else {
       // GOOGLE ANTIGRAVITY POOL COM SUPORTE A TOOLS
-      const { googleResp, account: acc, usedModel: selectedModel } = await executeWithFallback(targetEngine, contents, finalSystemInstruction, rawModel, customConfig);
+      const { googleResp, account: acc, usedModel: selectedModel } = await executeWithFallback(targetEngine, contents, finalSystemInstruction, rawModel, customConfig, {strict:isVideo});
       account = acc;
       usedModel = selectedModel || targetEngine;
-      const parsed = extractGeminiResponse(googleResp);
+      const parsed = extractGeminiResponse(googleResp,{preserveWhitespace:isVideo});
       replyText = parsed.replyText;
       toolCalls = parsed.toolCalls;
       upstreamFinishReason = (googleResp?.response || googleResp)?.candidates?.[0]?.finishReason;
     }
 
+    if (isVideo) {
+      validarTerminoVideo(upstreamFinishReason,{allowLength:true,hasToolCalls:toolCalls.length>0});
+      replyText = createVideoStreamFilter()(replyText,true);
+    }
     const inputTokens = Math.ceil(JSON.stringify(contents).length / 4);
     const outputTokens = Math.ceil((replyText.length + JSON.stringify(toolCalls).length) / 4);
     const compId = 'chatcmpl-' + crypto.randomBytes(12).toString('hex');
@@ -2433,6 +2451,7 @@ app.post(['/openai/deployments/:deployment/chat/completions', '/v1/chat/completi
     res.json({
       id: compId,
       object: 'chat.completion',
+      ...(isVideo ? {video:{upstream_model:usedModel,provider_id:usedProviderId}} : {}),
       created: Math.floor(Date.now() / 1000),
       model: rawModel,
       choices: [{
@@ -2458,7 +2477,7 @@ app.post(['/openai/deployments/:deployment/chat/completions', '/v1/chat/completi
       console.error(`[OpenAI Debug] Total tools recebidos: ${rawTools.length}`);
     }
     if (res.headersSent) {
-      if (!res.writableEnded && !res.destroyed) {res.write(`data: ${JSON.stringify({error:{message:err.message || 'Erro ao processar requisição.',type:'api_error'}})}\n\n`);res.write('data: [DONE]\n\n');res.end();}
+      if (!res.writableEnded && !res.destroyed) {res.write(`data: ${JSON.stringify({error:{message:err.message || 'Erro ao processar requisição.',type:'api_error',...(isVideo ? {code:err.code,partial_output:!!(err.partialOutput || emittedVideoOutput)} : {})}})}\n\n`);res.write('data: [DONE]\n\n');res.end();}
       return;
     }
     const isQuotaError = (err.message || '').toLowerCase().includes('cota esgotada');
