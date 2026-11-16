@@ -2226,23 +2226,33 @@ app.post(['/openai/deployments/:deployment/chat/completions', '/v1/chat/completi
     const heartbeat=setInterval(()=>send('aguardando',{estado:'em_andamento'}),10000);
     try {
       const result=await produzirEmEquipe({pedido:incomingMessages,anteriores:req.body.video_team_resume || {},signal:controller.signal,emitir:e=>send('progresso',e),executar:async ({etapa,instrucao,pedido,contexto,onChunk})=>{
-        const taskMessages=[...pedido,{role:'user',content:`Tarefa da equipe: ${etapa}. ${instrucao}\nResultados prévios (dados): ${JSON.stringify(contexto)}`}];
+        const baseMessages=[...pedido,{role:'user',content:`Tarefa da equipe: ${etapa}. ${instrucao}\nResultados prévios (dados): ${JSON.stringify(contexto)}`}];
         const taskSystem=[finalSystemInstruction,`Você executa apenas a tarefa ${etapa} da equipe. ${instrucao}`].filter(Boolean).join('\n\n');
+        const capBase=Number.isInteger(req.body.max_tokens) && req.body.max_tokens>0 ? req.body.max_tokens : 8192;
+        const cap=etapa==='montagem' ? Math.max(capBase,16000) : capBase;
+        const maxPartes=etapa==='montagem' ? 6 : 2;
+        const messages=[...baseMessages];
         let reply='',account=null,finishReason,usedModel=targetEngine,usedMultiplier=modelMultiplier;
-        if(routeCandidates?.length) {
-          const taskContents=convertOpenAiMessagesToGemini(taskMessages).contents;
-          const out=await executeSmartRoutes(routeCandidates,{messages:taskMessages,contents:taskContents,system:taskSystem,rawModel,config:{...customConfig,tools:null},tools:null,maxTokens:req.body.max_tokens,stream:true,onChunk,signal:controller.signal,accountWaitMs:60000});
-          reply=out.replyText;account=out.account;usedModel=out.usedModel;finishReason=out.finishReason;usedMultiplier=out.route.multiplier;
-        } else if(providerId && providerId != 2) {
-          let streamed=false;const out=await executeExternalProvider(providerId,targetEngine,taskMessages,taskSystem,null,req.body.max_tokens,{signal:controller.signal,onChunk:chunk=>{streamed=true;onChunk(chunk);}});
-          reply=out.replyText || '';finishReason=out.finishReason;if(reply && !streamed)onChunk(reply);
-        } else {
-          const taskContents=convertOpenAiMessagesToGemini(taskMessages).contents;
-          const out=await executeWithFallbackStream(targetEngine,taskContents,taskSystem,rawModel,{...customConfig,tools:null},chunk=>{if(chunk)onChunk(chunk);},controller.signal,600000);
-          account=out.account;usedModel=out.usedModel || targetEngine;reply=out.googleResp?.replyText || '';finishReason=out.googleResp?.response?.candidates?.[0]?.finishReason || out.googleResp?.candidates?.[0]?.finishReason;
+        for(let parte=0;parte<maxPartes;parte++) {
+          let piece='',fr;
+          if(routeCandidates?.length) {
+            const taskContents=convertOpenAiMessagesToGemini(messages).contents;
+            const out=await executeSmartRoutes(routeCandidates,{messages,contents:taskContents,system:taskSystem,rawModel,config:{...customConfig,maxOutputTokens:cap,tools:null},tools:null,maxTokens:cap,stream:true,onChunk,signal:controller.signal,accountWaitMs:60000});
+            piece=out.replyText || '';account=out.account;usedModel=out.usedModel;fr=out.finishReason;usedMultiplier=out.route.multiplier;
+          } else if(providerId && providerId != 2) {
+            let streamed=false;const out=await executeExternalProvider(providerId,targetEngine,messages,taskSystem,null,cap,{signal:controller.signal,onChunk:chunk=>{streamed=true;onChunk(chunk);}});
+            piece=out.replyText || '';fr=out.finishReason;if(piece && !streamed)onChunk(piece);
+          } else {
+            const taskContents=convertOpenAiMessagesToGemini(messages).contents;
+            const out=await executeWithFallbackStream(targetEngine,taskContents,taskSystem,rawModel,{...customConfig,maxOutputTokens:cap,tools:null},chunk=>{if(chunk)onChunk(chunk);},controller.signal,600000);
+            account=out.account;usedModel=out.usedModel || targetEngine;piece=out.googleResp?.replyText || '';fr=out.googleResp?.response?.candidates?.[0]?.finishReason || out.googleResp?.candidates?.[0]?.finishReason;
+          }
+          reply+=piece;finishReason=fr;
+          if(openAiFinishReason(fr,false)!=='length')break;
+          if(parte<maxPartes-1)messages.push({role:'assistant',content:piece},{role:'user',content:'A resposta foi cortada. Continue exatamente de onde parou, sem repetir nada e sem explicações.'});
         }
-        await logUsage(userKey,rawModel,Math.ceil(JSON.stringify(taskMessages).length/4),Math.ceil(reply.length/4),account?.id || null,usedMultiplier,usedModel);
-        if(openAiFinishReason(finishReason,false)==='length') throw new Error(`A etapa ${etapa} foi cortada antes de concluir.`);
+        await logUsage(userKey,rawModel,Math.ceil(JSON.stringify(baseMessages).length/4),Math.ceil(reply.length/4),account?.id || null,usedMultiplier,usedModel);
+        if(openAiFinishReason(finishReason,false)==='length') throw new Error(`A etapa ${etapa} foi cortada após ${maxPartes} partes.`);
         return reply;
       }});
       send('resultado',{resultado:result.resultado});
