@@ -2269,7 +2269,10 @@ app.post(['/openai/deployments/:deployment/chat/completions', '/v1/chat/completi
 
       const compId = 'chatcmpl-' + crypto.randomBytes(12).toString('hex');
       const abortController = new AbortController();
-      req.on('close', () => abortController.abort());
+      res.on('close', () => { if (!res.writableEnded) abortController.abort(); });
+      const heartbeat=setInterval(()=>{if(!res.destroyed && !res.writableEnded)res.write(': aguardando\n\n');},15000);
+      res.once('close',()=>clearInterval(heartbeat));
+      res.once('finish',()=>clearInterval(heartbeat));
 
       // Chunk inicial com role
       const startChunk = {
