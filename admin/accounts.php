@@ -184,6 +184,7 @@ function getAccountOpusQuotaStatus($acc) {
 
     $hasOpusQuota = $mInfo['quotaInfo']['hasOpusQuota'] ?? ($q['hasOpusQuota'] ?? null);
     $fraction = isset($mInfo['quotaInfo']['remainingFraction']) ? (float)$mInfo['quotaInfo']['remainingFraction'] : null;
+    if ($fraction !== null) $hasOpusQuota = $fraction > 0;
     $checkedAt = $mInfo['quotaInfo']['checkedAt'] ?? ($q['opusCheckedAt'] ?? null);
     $message = $mInfo['quotaInfo']['statusMessage'] ?? ($q['opusMessage'] ?? '');
     $resetTime = $mInfo['quotaInfo']['resetTime'] ?? null;
@@ -207,11 +208,10 @@ function getAccountOpusQuotaStatus($acc) {
         ];
     }
 
-    if ($hasOpusQuota === true && ($fraction === null || $fraction > 0.05)) {
-        $effectiveFraction = $fraction ?? 1.0;
-        $availableTokens = (int)($mInfo['availableTokens'] ?? ($q['opusTokensAvailable'] ?? round($maxTokens * $effectiveFraction)));
-        $consumedTokens = max(0, $maxTokens - $availableTokens);
-        $percentage = round(($availableTokens / max(1, $maxTokens)) * 100);
+    if ($hasOpusQuota === true && ($fraction === null || $fraction > 0)) {
+        $availableTokens = 0;
+        $consumedTokens = 0;
+        $percentage = $fraction === null ? null : round(max(0,min(1,$fraction))*100);
 
         return [
             'status' => 'available',
@@ -221,7 +221,7 @@ function getAccountOpusQuotaStatus($acc) {
             'consumed_tokens' => $consumedTokens,
             'percentage' => $percentage,
             'tokens_formatted' => number_format($availableTokens, 0, ',', '.') . ' / ' . number_format($maxTokens, 0, ',', '.') . ' tk',
-            'label' => '💎 Opus: cota confirmada (' . $percentage . '% informado)',
+            'label' => $percentage === null ? '💎 Opus: acesso confirmado; porcentagem não informada' : '💎 Opus: ' . $percentage . '% informado',
             'badge_class' => 'bg-gradient-to-r from-pink-500/20 to-purple-500/20 border-pink-500/40 text-pink-300 shadow-md shadow-pink-500/10',
             'icon' => 'fa-solid fa-gem text-pink-400',
             'checked_at' => $checkedAt,
@@ -360,7 +360,7 @@ foreach ($accounts as $acc) {
         $fraction = (float)($mInfo['quotaInfo']['remainingFraction'] ?? 1.0);
 
         // Se for Opus, só adiciona tokens disponíveis se a conta realmente tiver cota confirmada
-        if (stripos($mKey, 'opus') !== false) {
+        if ($mKey === 'claude-opus-4-6-thinking') {
             if (!$accOpusStat['has_quota']) {
                 $fraction = 0.0;
             }
@@ -607,6 +607,9 @@ require_once __DIR__ . '/includes/header.php';
                     'claude-sonnet-4-6',
                     'claude-opus-4-6-thinking'
                 ];
+                foreach (array_keys($poolModelStats) as $discoveredKey) {
+                    if (preg_match('/gemini|claude.*(?:sonnet|opus)/i', $discoveredKey) && !in_array($discoveredKey, $featuredPoolKeys, true)) $featuredPoolKeys[]=$discoveredKey;
+                }
 
                 foreach ($featuredPoolKeys as $pKey): 
                     $pStat = $poolModelStats[$pKey] ?? null;
@@ -896,6 +899,9 @@ require_once __DIR__ . '/includes/header.php';
                                     'claude-opus-4-6-thinking',
                                     'gpt-oss-120b-medium'
                                 ];
+                                foreach (array_keys($modelsQuotas) as $discoveredKey) {
+                                    if (preg_match('/gemini|claude.*(?:sonnet|opus)/i', $discoveredKey) && !in_array($discoveredKey, $featuredKeys, true)) $featuredKeys[]=$discoveredKey;
+                                }
 
                                 foreach ($featuredKeys as $mKey): 
                                     $mQuota = $modelsQuotas[$mKey] ?? null;
@@ -907,10 +913,13 @@ require_once __DIR__ . '/includes/header.php';
                                     
                                     $fraction = isset($mQuota['quotaInfo']['remainingFraction']) && is_numeric($mQuota['quotaInfo']['remainingFraction']) ? max(0, min(1, (float)$mQuota['quotaInfo']['remainingFraction'])) : null;
                                     $resetTime = $mQuota['quotaInfo']['resetTime'] ?? null;
+                                    $quotaSource = $mQuota['quotaInfo']['quotaSource'] ?? null;
+                                    $quotaType = $mQuota['quotaInfo']['tokenType'] ?? null;
+                                    $quotaChecked = $mQuota['quotaInfo']['checkedAt'] ?? null;
                                     $maxTokens = $mQuota['maxTokens'] ?? 1048576;
 
                                     // Lógica especial de cota real para Claude Opus
-                                    $isOpus = stripos($mKey, 'opus') !== false;
+                                    $isOpus = $mKey === 'claude-opus-4-6-thinking';
                                     $opusNote = null;
                                     if ($isOpus) {
                                         $maxTokens = $accOpus['max_tokens'];
@@ -968,6 +977,9 @@ require_once __DIR__ . '/includes/header.php';
                                         <?php if ($opusNote): ?>
                                             <div class="pt-0.5"><?= $opusNote ?></div>
                                         <?php endif; ?>
+                                        <?php if ($quotaSource === 'retrieveUserQuota'): ?>
+                                            <div class="text-[10px] text-cyan-300">Consulta Google<?= $quotaType ? ' · ' . htmlspecialchars($quotaType, ENT_QUOTES, 'UTF-8') : '' ?><?= $quotaChecked ? ' · ' . htmlspecialchars($quotaChecked, ENT_QUOTES, 'UTF-8') : '' ?></div>
+                                        <?php endif; ?>
 
                                         <div class="bg-gray-950/70 px-2 py-1.5 rounded-xl border border-gray-800/80 text-xs" title="Estimativa do gateway para esta conta e modelo efetivamente atendido. Não é a cota em tokens do Google.">
                                             <span class="text-gray-400">Uso estimado registrado desde a atualização:</span>
@@ -1003,7 +1015,7 @@ require_once __DIR__ . '/includes/header.php';
                                         if (preg_match('/(2\.5|3\.5|3\.6|3\.7)/i', $modKey)) continue;
 
                                         $f = isset($modDetails['quotaInfo']['remainingFraction']) && is_numeric($modDetails['quotaInfo']['remainingFraction']) ? max(0, min(1, (float)$modDetails['quotaInfo']['remainingFraction'])) : null;
-                                        if (stripos($modKey, 'opus') !== false && !$accOpus['has_quota']) {
+                                        if ($modKey === 'claude-opus-4-6-thinking' && !$accOpus['has_quota']) {
                                             $f = 0.0;
                                         }
                                         $p = $f === null ? null : round($f * 100);

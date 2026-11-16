@@ -110,12 +110,16 @@ CREATE TABLE IF NOT EXISTS `models` (
   `status` ENUM('active', 'inactive') DEFAULT 'active',
   `is_admin_only` TINYINT(1) DEFAULT 0,
   `is_realtime` TINYINT(1) DEFAULT 0,
+  `is_video` TINYINT(1) DEFAULT 0,
   `is_smart_routing` TINYINT(1) DEFAULT 0,
   `routing_fast_model` VARCHAR(100) DEFAULT 'gemini-2.5-flash',
+  `routing_fast_provider_id` INT DEFAULT NULL,
   `routing_fast_multiplier` DECIMAL(5,2) DEFAULT 1.00,
   `routing_medium_model` VARCHAR(100) DEFAULT 'gemini-3.8-flash-medium',
+  `routing_medium_provider_id` INT DEFAULT NULL,
   `routing_medium_multiplier` DECIMAL(5,2) DEFAULT 1.50,
   `routing_heavy_model` VARCHAR(100) DEFAULT 'claude-opus-4-6-thinking',
+  `routing_heavy_provider_id` INT DEFAULT NULL,
   `routing_heavy_multiplier` DECIMAL(5,2) DEFAULT 3.00,
   `sort_order` INT DEFAULT 0,
   `created_at` TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
@@ -273,3 +277,6 @@ INSERT INTO `models` (`id`, `model_key`, `name`, `provider_id`, `upstream_model`
 (3, 'gemini-3.8-flash-medium', 'Gemini 3.8 Flash Medium', 2, 'gemini-3.8-flash-medium', 0.80, 'active', 0, 'gemini-2.5-flash', 'gemini-3.8-flash-medium', 'claude-opus-4-6-thinking'),
 (4, 'gemini-2.5-flash', 'Gemini 2.5 Flash (Realtime)', 2, 'gemini-2.5-flash', 0.50, 'active', 0, 'gemini-2.5-flash', 'gemini-3.8-flash-medium', 'claude-opus-4-6-thinking')
 ON DUPLICATE KEY UPDATE `upstream_model` = VALUES(`upstream_model`), `name` = VALUES(`name`), `provider_id` = VALUES(`provider_id`);
+
+-- Modelo de vídeo é ativado e configurado pelo administrador.
+INSERT IGNORE INTO models (model_key,name,upstream_model,status,is_video,is_smart_routing,routing_fast_model,routing_medium_model,routing_heavy_model) SELECT 'video','Vídeo','','inactive',1,1,'','','' WHERE NOT EXISTS (SELECT 1 FROM models WHERE is_video=1);

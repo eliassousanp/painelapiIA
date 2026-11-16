@@ -69,26 +69,11 @@ class AntigravityAccountPool {
   async getAllActiveAccounts() {
     let [accounts] = await this.pool.query(`
       SELECT * FROM antigravity_accounts 
-      WHERE is_active = 1 AND status = 'active'
+      WHERE is_active = 1 AND status IN ('active', 'quota_exhausted')
       ORDER BY total_requests ASC
     `);
 
-    if (accounts.length === 0) {
-      // Auto-recuperação: se todas estiverem como quota_exhausted, reativa para tentar novamente
-      // Exclui contas banidas (status = 'banned') para não sobrescrever o ban do Google
-      const [allActive] = await this.pool.query(`
-        SELECT * FROM antigravity_accounts
-        WHERE is_active = 1 AND status != 'banned'
-        ORDER BY total_requests ASC
-      `);
-
-      if (allActive.length > 0) {
-        await this.pool.query(`UPDATE antigravity_accounts SET status = 'active' WHERE is_active = 1 AND status != 'banned'`);
-        accounts = allActive;
-      } else {
-        throw new Error('Nenhuma conta Google Antigravity conectada no pool.');
-      }
-    }
+    if (accounts.length === 0) throw new Error('Nenhuma conta Google Antigravity conectada no pool.');
 
     return accounts;
   }
@@ -203,6 +188,9 @@ class AntigravityAccountPool {
       if (abortSignal?.aborted) throw new Error('Espera por conta cancelada.');
       const accounts = await this.getAllActiveAccounts();
       const ranked = this.rankAccounts(accounts, modelKey);
+      if (ranked.length && ranked.every(item=>item.inCooldown || item.remainingFraction<=0.02)) {
+        throw new Error(`Nenhuma conta com cota disponível para ${modelKey}.`);
+      }
 
       for (const item of ranked) {
         const { account, stat, rpm, inCooldown, remainingFraction } = item;
@@ -344,8 +332,8 @@ class AntigravityAccountPool {
   /**
    * Executa chamada com Fallback automático em caso de 429/503 ou 403
    */
-  async executeWithFallback(targetEngine, contents, systemInstruction, rawModel, customConfig = null) {
-    if (targetEngine.includes('3.6') || targetEngine.includes('3.7')) {
+  async executeWithFallback(targetEngine, contents, systemInstruction, rawModel, customConfig = null, options = {}) {
+    if (!options.strict && (targetEngine.includes('3.6') || targetEngine.includes('3.7'))) {
       targetEngine = 'gemini-3.8-flash-medium';
     }
 
@@ -377,7 +365,7 @@ class AntigravityAccountPool {
         const msg = (err.message || '').toLowerCase();
 
         // Se o modelo retornou 404 NOT FOUND no Google Cloud Code, faz fallback seguro para gemini-3.8-flash-medium
-        if ((status === 404 || msg.includes('not found')) && targetEngine !== 'gemini-3.8-flash-medium') {
+        if (!options.strict && (status === 404 || msg.includes('not found')) && targetEngine !== 'gemini-3.8-flash-medium') {
           console.warn(`[Pool Fallback] Modelo "${targetEngine}" retornou 404 NOT FOUND no Google. Redirecionando com segurança para "gemini-3.8-flash-medium"...`);
           return await this.executeWithFallback('gemini-3.8-flash-medium', contents, systemInstruction, rawModel, customConfig);
         }
@@ -386,7 +374,8 @@ class AntigravityAccountPool {
         const isRateLimitOrTimeout = status === 429 || status === 503 || msg.includes('quota') || msg.includes('rate') || msg.includes('resource_exhausted') || msg.includes('timeout') || msg.includes('econnreset') || msg.includes('socket hang up');
 
         // Se for 403/TOS_VIOLATION ou 429/503, rate limit ou timeout temporário, tenta a próxima conta imediatamente sem quebrar a requisição
-        if (isTOSor403 || isRateLimitOrTimeout) {
+        if (options.strict && account && [401,402,404].includes(status)) this.getAccountStats(account.id).modelCooldowns.set(targetEngine,Date.now()+60000);
+        if (isTOSor403 || isRateLimitOrTimeout || (options.strict && [401,402,404].includes(status))) {
           console.warn(`[Pool Fallback] Tentativa ${attempt + 1} falhou na conta #${account?.id} (${account?.email || 'N/A'}) [${status}]: ${err.message}. Tentando próxima conta livre...`);
           continue;
         }
@@ -396,6 +385,7 @@ class AntigravityAccountPool {
       }
     }
 
+    if (options.strict) throw lastError || new Error('Nenhuma conta disponível para o modelo configurado.');
     // Fallback Inteligente entre Modelos em Cascata: Se o modelo solicitado estiver com cota esgotada no pool
     if (targetEngine.includes('opus')) {
       try {
@@ -419,8 +409,8 @@ class AntigravityAccountPool {
   /**
    * Executa chamada via Streaming com Fallback inteligente
    */
-  async executeWithFallbackStream(targetEngine, contents, systemInstruction, requestedModel, customConfig, onChunk, abortSignal, accountWaitMs = 60000) {
-    if (targetEngine.includes('3.6') || targetEngine.includes('3.7')) {
+  async executeWithFallbackStream(targetEngine, contents, systemInstruction, requestedModel, customConfig, onChunk, abortSignal, accountWaitMs = 60000, options = {}) {
+    if (!options.strict && (targetEngine.includes('3.6') || targetEngine.includes('3.7'))) {
       targetEngine = 'gemini-3.8-flash-medium';
     }
 
@@ -429,6 +419,7 @@ class AntigravityAccountPool {
 
     for (let attempt = 0; attempt < accounts.length; attempt++) {
       let account = null;
+      let emitted = false;
       try {
         account = await this.acquireAccount(targetEngine, accountWaitMs, abortSignal);
         const streamRes = await streamGenerateContent(
@@ -438,7 +429,7 @@ class AntigravityAccountPool {
           contents,
           systemInstruction,
           customConfig,
-          onChunk,
+          (...args)=>{if(args[0])emitted=true;onChunk?.(...args);},
           abortSignal
         );
         this.releaseAccount(account.id);
@@ -449,11 +440,12 @@ class AntigravityAccountPool {
           this.handleAccountError(account.id, err, targetEngine || requestedModel, account.email);
         }
         lastError = err;
+        if(options.strict && emitted) {err.partialOutput=true;throw err;}
         const status = err.status || err.statusCode || 0;
         const msg = (err.message || '').toLowerCase();
 
         // Se o modelo retornou 404 NOT FOUND no Google Cloud Code durante streaming, faz fallback seguro para gemini-3.8-flash-medium
-        if ((status === 404 || msg.includes('not found')) && targetEngine !== 'gemini-3.8-flash-medium') {
+        if (!options.strict && (status === 404 || msg.includes('not found')) && targetEngine !== 'gemini-3.8-flash-medium') {
           console.warn(`[Pool Stream Fallback] Modelo "${targetEngine}" retornou 404 NOT FOUND no Google. Redirecionando streaming com segurança para "gemini-3.8-flash-medium"...`);
           return await this.executeWithFallbackStream('gemini-3.8-flash-medium', contents, systemInstruction, requestedModel, customConfig, onChunk, abortSignal, accountWaitMs);
         }
@@ -461,7 +453,8 @@ class AntigravityAccountPool {
         const isTOSor403 = status === 403 || msg.includes('terms of service') || msg.includes('tos_violation') || msg.includes('permission_denied');
         const isRateLimitOrTimeout = status === 429 || status === 503 || msg.includes('quota') || msg.includes('rate') || msg.includes('resource_exhausted') || msg.includes('timeout') || msg.includes('econnreset') || msg.includes('socket hang up');
 
-        if (isTOSor403 || isRateLimitOrTimeout) {
+        if (options.strict && account && [401,402,404].includes(status)) this.getAccountStats(account.id).modelCooldowns.set(targetEngine,Date.now()+60000);
+        if (isTOSor403 || isRateLimitOrTimeout || (options.strict && [401,402,404].includes(status))) {
           console.warn(`[Pool Stream Fallback] Tentativa ${attempt + 1} falhou na conta #${account?.id} (${account?.email || 'N/A'}) [${status}]: ${err.message}. Tentando próxima conta livre...`);
           continue;
         }
@@ -470,6 +463,7 @@ class AntigravityAccountPool {
       }
     }
 
+    if (options.strict) throw lastError || new Error('Nenhuma conta disponível para o modelo configurado.');
     // Fallback Inteligente entre Modelos no Streaming em Cascata
     if (targetEngine.includes('opus')) {
       try {

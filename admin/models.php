@@ -24,25 +24,34 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
         $status = $_POST['status'] ?? 'active';
         $isAdminOnly = !empty($_POST['is_admin_only']) ? 1 : 0;
         $isRealtime = !empty($_POST['is_realtime']) ? 1 : 0;
+        $isVideo = !empty($_POST['is_video']) ? 1 : 0;
         $isSmartRouting = !empty($_POST['is_smart_routing']) ? 1 : 0;
         $routingFast = trim($_POST['routing_fast_model'] ?? '');
+        $routingFastProvider = !empty($_POST['routing_fast_provider_id']) ? (int)$_POST['routing_fast_provider_id'] : null;
         $routingFastMult = isset($_POST['routing_fast_multiplier']) ? floatval($_POST['routing_fast_multiplier']) : 1.00;
         $routingMedium = trim($_POST['routing_medium_model'] ?? '');
+        $routingMediumProvider = !empty($_POST['routing_medium_provider_id']) ? (int)$_POST['routing_medium_provider_id'] : null;
         $routingMediumMult = isset($_POST['routing_medium_multiplier']) ? floatval($_POST['routing_medium_multiplier']) : 1.50;
         $routingHeavy = trim($_POST['routing_heavy_model'] ?? '');
+        $routingHeavyProvider = !empty($_POST['routing_heavy_provider_id']) ? (int)$_POST['routing_heavy_provider_id'] : null;
         $routingHeavyMult = isset($_POST['routing_heavy_multiplier']) ? floatval($_POST['routing_heavy_multiplier']) : 3.00;
 
-        if (!empty($modelKey) && !empty($name)) {
+        if (!empty($modelKey) && !empty($name) && (!$isSmartRouting ? $upstreamModel !== '' : ($routingFast !== '' || $routingMedium !== '' || $routingHeavy !== ''))) {
+            $db->beginTransaction();
+            try {
+            if ($isVideo) {$clearVideo=$db->prepare('UPDATE models SET is_video=0 WHERE is_video=1 AND id<>?');$clearVideo->execute([$modelId]);}
             if ($modelId > 0) {
-                $stmt = $db->prepare("UPDATE models SET model_key = ?, name = ?, provider_id = ?, upstream_model = ?, multiplier = ?, pre_prompt = ?, status = ?, is_admin_only = ?, is_realtime = ?, is_smart_routing = ?, routing_fast_model = ?, routing_fast_multiplier = ?, routing_medium_model = ?, routing_medium_multiplier = ?, routing_heavy_model = ?, routing_heavy_multiplier = ? WHERE id = ?");
-                $stmt->execute([$modelKey, $name, $providerId, $upstreamModel, $multiplier, $modelPrePrompt, $status, $isAdminOnly, $isRealtime, $isSmartRouting, $routingFast, $routingFastMult, $routingMedium, $routingMediumMult, $routingHeavy, $routingHeavyMult, $modelId]);
+                $stmt = $db->prepare("UPDATE models SET model_key = ?, name = ?, provider_id = ?, upstream_model = ?, multiplier = ?, pre_prompt = ?, status = ?, is_admin_only = ?, is_realtime = ?, is_video = ?, is_smart_routing = ?, routing_fast_model = ?, routing_fast_provider_id = ?, routing_fast_multiplier = ?, routing_medium_model = ?, routing_medium_provider_id = ?, routing_medium_multiplier = ?, routing_heavy_model = ?, routing_heavy_provider_id = ?, routing_heavy_multiplier = ? WHERE id = ?");
+                $stmt->execute([$modelKey, $name, $providerId, $upstreamModel, $multiplier, $modelPrePrompt, $status, $isAdminOnly, $isRealtime, $isVideo, $isSmartRouting, $routingFast, $routingFastProvider, $routingFastMult, $routingMedium, $routingMediumProvider, $routingMediumMult, $routingHeavy, $routingHeavyProvider, $routingHeavyMult, $modelId]);
             } else {
-                $stmt = $db->prepare("INSERT INTO models (model_key, name, provider_id, upstream_model, multiplier, pre_prompt, status, is_admin_only, is_realtime, is_smart_routing, routing_fast_model, routing_fast_multiplier, routing_medium_model, routing_medium_multiplier, routing_heavy_model, routing_heavy_multiplier) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
-                $stmt->execute([$modelKey, $name, $providerId, $upstreamModel, $multiplier, $modelPrePrompt, $status, $isAdminOnly, $isRealtime, $isSmartRouting, $routingFast, $routingFastMult, $routingMedium, $routingMediumMult, $routingHeavy, $routingHeavyMult]);
+                $stmt = $db->prepare("INSERT INTO models (model_key, name, provider_id, upstream_model, multiplier, pre_prompt, status, is_admin_only, is_realtime, is_video, is_smart_routing, routing_fast_model, routing_fast_provider_id, routing_fast_multiplier, routing_medium_model, routing_medium_provider_id, routing_medium_multiplier, routing_heavy_model, routing_heavy_provider_id, routing_heavy_multiplier) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
+                $stmt->execute([$modelKey, $name, $providerId, $upstreamModel, $multiplier, $modelPrePrompt, $status, $isAdminOnly, $isRealtime, $isVideo, $isSmartRouting, $routingFast, $routingFastProvider, $routingFastMult, $routingMedium, $routingMediumProvider, $routingMediumMult, $routingHeavy, $routingHeavyProvider, $routingHeavyMult]);
             }
+            $db->commit();
             $msg = 'Modelo salvo com sucesso!';
+            } catch (Throwable $e) {$db->rollBack();$error='Não foi possível salvar o modelo. Confira a migração do banco e os dados informados.';}
         } else {
-            $error = 'Preencha a Chave do Modelo e o Nome.';
+            $error = 'Preencha a chave e o nome e escolha o modelo do provedor ou pelo menos uma opção do roteamento inteligente.';
         }
     } elseif ($_POST['action'] === 'toggle_model_status') {
         $modelId = (int)$_POST['model_id'];
@@ -383,6 +392,7 @@ require_once __DIR__ . '/includes/header.php';
                                     Não
                                 </span>
                             <?php endif; ?>
+                            <?php if (!empty($m['is_video'])): ?><span class="text-cyan-300 text-[10px] font-bold">Vídeo</span><?php endif; ?>
                         </td>
                         <td class="py-2.5 px-3 font-sans text-center">
                             <form method="POST" action="models.php" class="inline">
@@ -509,10 +519,11 @@ require_once __DIR__ . '/includes/header.php';
                         <div class="grid grid-cols-1 sm:grid-cols-3 gap-2 items-center">
                             <div class="sm:col-span-2">
                                 <label class="block text-[10px] font-bold text-emerald-400 mb-0.5">1. Leve / Rápido</label>
-                                <select id="select_routing_fast" onchange="document.getElementById('model_routing_fast_model').value = this.value" class="w-full p-2 rounded-xl bg-gray-950 border border-gray-800 text-emerald-300 font-mono text-[11px]">
+                                <select id="select_routing_fast" onchange="setRoutingChoice('fast', this)" class="w-full p-2 rounded-xl bg-gray-950 border border-gray-800 text-emerald-300 font-mono text-[11px]">
                                     <option value="">-- Selecione --</option>
                                 </select>
                                 <input type="hidden" name="routing_fast_model" id="model_routing_fast_model">
+                                <input type="hidden" name="routing_fast_provider_id" id="model_routing_fast_provider_id">
                             </div>
                             <div>
                                 <label class="block text-[10px] font-bold text-emerald-400 mb-0.5">Multiplicador</label>
@@ -523,10 +534,11 @@ require_once __DIR__ . '/includes/header.php';
                         <div class="grid grid-cols-1 sm:grid-cols-3 gap-2 items-center">
                             <div class="sm:col-span-2">
                                 <label class="block text-[10px] font-bold text-yellow-400 mb-0.5">2. Médio / Análise</label>
-                                <select id="select_routing_medium" onchange="document.getElementById('model_routing_medium_model').value = this.value" class="w-full p-2 rounded-xl bg-gray-950 border border-gray-800 text-yellow-300 font-mono text-[11px]">
+                                <select id="select_routing_medium" onchange="setRoutingChoice('medium', this)" class="w-full p-2 rounded-xl bg-gray-950 border border-gray-800 text-yellow-300 font-mono text-[11px]">
                                     <option value="">-- Selecione --</option>
                                 </select>
                                 <input type="hidden" name="routing_medium_model" id="model_routing_medium_model">
+                                <input type="hidden" name="routing_medium_provider_id" id="model_routing_medium_provider_id">
                             </div>
                             <div>
                                 <label class="block text-[10px] font-bold text-yellow-400 mb-0.5">Multiplicador</label>
@@ -537,10 +549,11 @@ require_once __DIR__ . '/includes/header.php';
                         <div class="grid grid-cols-1 sm:grid-cols-3 gap-2 items-center">
                             <div class="sm:col-span-2">
                                 <label class="block text-[10px] font-bold text-purple-400 mb-0.5">3. Pesado / Código</label>
-                                <select id="select_routing_heavy" onchange="document.getElementById('model_routing_heavy_model').value = this.value" class="w-full p-2 rounded-xl bg-gray-950 border border-gray-800 text-purple-300 font-mono text-[11px]">
+                                <select id="select_routing_heavy" onchange="setRoutingChoice('heavy', this)" class="w-full p-2 rounded-xl bg-gray-950 border border-gray-800 text-purple-300 font-mono text-[11px]">
                                     <option value="">-- Selecione --</option>
                                 </select>
                                 <input type="hidden" name="routing_heavy_model" id="model_routing_heavy_model">
+                                <input type="hidden" name="routing_heavy_provider_id" id="model_routing_heavy_provider_id">
                             </div>
                             <div>
                                 <label class="block text-[10px] font-bold text-purple-400 mb-0.5">Multiplicador</label>
@@ -582,6 +595,7 @@ require_once __DIR__ . '/includes/header.php';
                         </select>
                     </div>
                 </div>
+                <label class="flex items-center gap-2 text-xs text-gray-300 mt-3"><input type="checkbox" name="is_video" id="model_is_video" value="1"> Usar este modelo na rota /v1/video (substitui a escolha anterior)</label>
             </div>
 
             <!-- Rodapé do Modal com Botão Salvar Fixo -->
@@ -665,6 +679,12 @@ require_once __DIR__ . '/includes/header.php';
 
     const providersList = <?= json_encode($providers) ?>;
 
+    function setRoutingChoice(tier, select) {
+        const option=select.selectedOptions[0];
+        document.getElementById(`model_routing_${tier}_model`).value=option?.dataset.model || '';
+        document.getElementById(`model_routing_${tier}_provider_id`).value=option?.dataset.provider || '';
+    }
+
     function populateRoutingSelects(provId) {
         const selects = [
             document.getElementById("select_routing_fast"),
@@ -686,7 +706,9 @@ require_once __DIR__ . '/includes/header.php';
                     
                     pModels.forEach(m => {
                         const opt = document.createElement("option");
-                        opt.value = m.upstream_model;
+                        opt.value = `${p.id}::${m.upstream_model}`;
+                        opt.dataset.model = m.upstream_model;
+                        opt.dataset.provider = String(p.id);
                         opt.textContent = `${m.name} (${m.upstream_model})`;
                         group.appendChild(opt);
                     });
@@ -761,6 +783,7 @@ require_once __DIR__ . '/includes/header.php';
 
     function toggleSmartRoutingUI() {
         const checked = document.getElementById("model_is_smart_routing").checked;
+        document.getElementById("model_upstream_model").required = !checked;
         const container = document.getElementById("smart_routing_fields");
         if (checked) {
             container.classList.remove("hidden");
@@ -779,13 +802,18 @@ require_once __DIR__ . '/includes/header.php';
         document.getElementById("model_pre_prompt").value = "";
         document.getElementById("model_is_admin_only").value = "0";
         document.getElementById("model_is_realtime").value = "1";
+        document.getElementById("model_is_video").checked = false;
         document.getElementById("model_status").value = "active";
         document.getElementById("model_is_smart_routing").checked = false;
-        document.getElementById("model_routing_fast_model").value = "gemini-3.8-flash-medium";
+        document.getElementById("model_routing_fast_model").value = "";
+        document.getElementById("model_routing_fast_provider_id").value = "";
         document.getElementById("model_routing_fast_multiplier").value = "1.0";
-        document.getElementById("model_routing_medium_model").value = "gemini-3.8-flash-medium";
+        document.getElementById("model_routing_medium_model").value = "";
+        document.getElementById("model_routing_medium_provider_id").value = "";
         document.getElementById("model_routing_medium_multiplier").value = "1.5";
-        document.getElementById("model_routing_heavy_model").value = "claude-opus-4-6-thinking";
+        document.getElementById("model_routing_heavy_model").value = "";
+        document.getElementById("model_routing_heavy_provider_id").value = "";
+        for (const tier of ['fast','medium','heavy']) document.getElementById(`select_routing_${tier}`).value='';
         document.getElementById("model_routing_heavy_multiplier").value = "3.0";
         toggleSmartRoutingUI();
         document.getElementById("modelModalTitle").innerHTML = '<i class="fa-solid fa-microchip text-purple-400 mr-2"></i> Criar Novo Modelo';
@@ -803,16 +831,20 @@ require_once __DIR__ . '/includes/header.php';
         document.getElementById("model_pre_prompt").value = model.pre_prompt || "";
         document.getElementById("model_is_admin_only").value = model.is_admin_only ? "1" : "0";
         document.getElementById("model_is_realtime").value = (model.is_realtime == 1 || model.is_realtime === undefined) ? "1" : "0";
+        document.getElementById("model_is_video").checked = model.is_video == 1;
         document.getElementById("model_status").value = model.status;
         document.getElementById("model_is_smart_routing").checked = (model.is_smart_routing == 1);
-        let fastVal = model.routing_fast_model || "gemini-3.8-flash-medium";
-        let medVal = model.routing_medium_model || "gemini-3.8-flash-medium";
-        const heavyVal = model.routing_heavy_model || "claude-opus-4-6-thinking";
+        const fastVal = model.routing_fast_model || "";
+        const medVal = model.routing_medium_model || "";
+        const heavyVal = model.routing_heavy_model || "";
         document.getElementById("model_routing_fast_model").value = fastVal;
+        document.getElementById("model_routing_fast_provider_id").value = model.routing_fast_provider_id || "";
         document.getElementById("model_routing_fast_multiplier").value = model.routing_fast_multiplier || "1.0";
         document.getElementById("model_routing_medium_model").value = medVal;
+        document.getElementById("model_routing_medium_provider_id").value = model.routing_medium_provider_id || "";
         document.getElementById("model_routing_medium_multiplier").value = model.routing_medium_multiplier || "1.5";
         document.getElementById("model_routing_heavy_model").value = heavyVal;
+        document.getElementById("model_routing_heavy_provider_id").value = model.routing_heavy_provider_id || "";
         document.getElementById("model_routing_heavy_multiplier").value = model.routing_heavy_multiplier || "3.0";
         toggleSmartRoutingUI();
         document.getElementById("modelModalTitle").innerHTML = '<i class="fa-solid fa-pen-to-square text-purple-400 mr-2"></i> Editar Modelo: ' + model.model_key;
@@ -835,10 +867,12 @@ require_once __DIR__ . '/includes/header.php';
             upSelect.value = model.upstream_model;
             document.getElementById("model_upstream_model").value = model.upstream_model;
         }
-        for (const [id,value] of [['select_routing_fast',fastVal],['select_routing_medium',medVal],['select_routing_heavy',heavyVal]]) {
-            const select=document.getElementById(id);if(!select || !value)continue;
-            if(!Array.from(select.options).some(option=>option.value===value)) {const option=document.createElement('option');option.value=value;option.textContent=value+' (configurado anteriormente)';select.appendChild(option);}
-            select.value=value;
+        for (const [tier,value] of [['fast',fastVal],['medium',medVal],['heavy',heavyVal]]) {
+            const select=document.getElementById(`select_routing_${tier}`);if(!select || !value)continue;
+            const provider=String(model[`routing_${tier}_provider_id`] || '');
+            const matches=Array.from(select.options).filter(option=>option.dataset.model===value && (!provider || option.dataset.provider===provider));
+            if(matches.length===1) {select.value=matches[0].value;if(!provider)document.getElementById(`model_routing_${tier}_provider_id`).value=matches[0].dataset.provider;}
+            else {const option=document.createElement('option');option.value=`saved::${tier}`;option.textContent=value+' (configurado anteriormente; selecione o provedor)';select.appendChild(option);select.value=option.value;}
         }
         document.getElementById("modelModal").classList.remove("hidden");
     }

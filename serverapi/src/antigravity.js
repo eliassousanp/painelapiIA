@@ -97,12 +97,26 @@ export async function onboardUser(accessToken) {
 export async function fetchUserQuotas(accessToken, projectId) {
   try {
     const body = { project: projectId || 'aicode-consumers' };
-    const res = await postRequest(`${CLOUD_CODE_ENDPOINT}/v1internal:fetchAvailableModels`, body, accessToken);
+    const res = await postRequest(`${CLOUD_CODE_ENDPOINT}/v1internal:fetchAvailableModels`, body, accessToken, 20000);
     return res;
   } catch (err) {
     console.warn('[Antigravity] Erro ao buscar cotas:', err.message || err);
     return null;
   }
+}
+
+// Mesmo método usado pelo cliente Gemini para consultar as janelas da conta.
+export async function fetchUserQuotaBuckets(accessToken, projectId) {
+  const body={project:projectId || 'aicode-consumers'};
+  let last;
+  for(const host of [DAILY_ENDPOINT,CLOUD_CODE_ENDPOINT]) {
+    try {
+      const data=await postRequest(`${host}/v1internal:retrieveUserQuota`,body,accessToken,20000);
+      if(!Array.isArray(data?.buckets) || !data.buckets.length)throw new Error('Resposta sem janelas de cota.');
+      return data;
+    } catch(error) {last=error;}
+  }
+  throw new Error(`Não foi possível consultar as janelas de cota do Google: ${String(last?.message || 'erro desconhecido').slice(0,200)}`);
 }
 
 /**

@@ -14,7 +14,9 @@ import cors from 'cors';
 import mysql from 'mysql2/promise';
 import crypto from 'crypto';
 import { startOAuthFlow, refreshAccessToken, exchangeOAuthCode, closeActiveAuthServer } from './oauth.js';
-import { onboardUser, fetchUserQuotas, generateContent, streamGenerateContent } from './antigravity.js';
+import { onboardUser, fetchUserQuotas, fetchUserQuotaBuckets, generateContent, streamGenerateContent } from './antigravity.js';
+import { mergeGoogleQuotaBuckets } from './quota-google.mjs';
+import { ordenarRotas, tentarRotas, selecionarModeloVideo } from './roteamento-equipe.mjs';
 import { initRealtime, AVAILABLE_VOICES } from './realtime.js';
 import { initMcp } from './mcp.js';
 import {
@@ -130,6 +132,11 @@ const accountPool = new AntigravityAccountPool(pool);
   try { await pool.query('ALTER TABLE usage_logs ADD COLUMN actual_model VARCHAR(100) DEFAULT NULL'); } catch (e) { if(e.code !== 'ER_DUP_FIELDNAME') console.error('Falha ao adicionar modelo efetivo ao histórico:', e.message); }
   try { await pool.query('ALTER TABLE usage_logs ADD COLUMN account_id INT DEFAULT NULL'); } catch (e) { if(e.code !== 'ER_DUP_FIELDNAME') console.error('Falha ao adicionar conta ao histórico:', e.message); }
   try { await pool.query('ALTER TABLE provider_models ADD COLUMN free_catalog TINYINT(1) DEFAULT NULL'); } catch (e) { if(e.code !== 'ER_DUP_FIELDNAME') console.error('Falha ao adicionar classificação de modelos gratuitos:', e.message); }
+  for (const tier of ['fast','medium','heavy']) {
+    try {await pool.query(`ALTER TABLE models ADD COLUMN routing_${tier}_provider_id INT DEFAULT NULL`);} catch(e) {if(e.code!=='ER_DUP_FIELDNAME')console.error('Falha ao adicionar provedor do roteamento:',e.message);}
+  }
+  try {await pool.query('ALTER TABLE models ADD COLUMN is_video TINYINT(1) DEFAULT 0');} catch(e) {if(e.code!=='ER_DUP_FIELDNAME')console.error('Falha ao adicionar modelo de vídeo:',e.message);}
+  try {await pool.query("INSERT IGNORE INTO models (model_key,name,upstream_model,status,is_video,is_smart_routing,routing_fast_model,routing_medium_model,routing_heavy_model) SELECT 'video','Vídeo','','inactive',1,1,'','','' WHERE NOT EXISTS (SELECT 1 FROM models WHERE is_video=1)");} catch(e) {console.error('Falha ao preparar modelo de vídeo:',e.message);}
 })();
 
 async function getSetting(key, defaultValue = '') {
@@ -297,24 +304,27 @@ async function syncSingleAccount(acc, shouldProbeOpus = true) {
     console.warn(`[Sync Quotas] Falha ao renovar token de ${acc.email}:`, e.message);
   }
 
-  // 1. Consulta oficial de cotas sem gerar prompt (não consome tokens do catálogo padrão)
-  let quotas = null;
-  try {
-    quotas = await fetchUserQuotas(token, acc.project_id);
-  } catch (errQuota) {
-    console.warn(`[Sync Quotas] Falha em fetchUserQuotas para ${acc.email}:`, errQuota.message);
+  // Catálogo e janelas são fontes distintas; preservar a última consulta válida se ambas falharem.
+  const [catalogResult,bucketsResult]=await Promise.allSettled([fetchUserQuotas(token,acc.project_id),fetchUserQuotaBuckets(token,acc.project_id)]);
+  let quotas=catalogResult.status==='fulfilled' && catalogResult.value?.models ? catalogResult.value : null;
+  const buckets=bucketsResult.status==='fulfilled' ? bucketsResult.value : null;
+  if (!quotas && !buckets) throw new Error('O Google não retornou as cotas; a última consulta válida foi preservada.');
+  if (!quotas) {
+    const [rows]=await pool.query('SELECT quotas_json FROM antigravity_accounts WHERE id = ?', [acc.id]);
+    try {quotas=rows[0]?.quotas_json ? JSON.parse(rows[0].quotas_json) : {models:{}};} catch {quotas={models:{}};}
   }
-
-  if (!quotas || !quotas.models) throw new Error('O Google não retornou as cotas; a última consulta válida foi preservada.');
+  if (buckets) quotas=mergeGoogleQuotaBuckets(quotas,buckets).catalog;
 
   // 2. Teste real e definitivo de cota do Claude Opus 4.6 (probe leve de 1 token)
   const opusModelKey = 'claude-opus-4-6-thinking';
-  let hasOpus = false;
-  let opusFraction = 0.0;
+  const opusFresh = (buckets?.buckets || []).some(b=>b?.modelId===opusModelKey && typeof b.remainingFraction==='number') || (catalogResult.status==='fulfilled' && typeof catalogResult.value?.models?.[opusModelKey]?.quotaInfo?.remainingFraction==='number');
+  const observedOpus=quotas.models?.[opusModelKey]?.quotaInfo?.remainingFraction;
+  let hasOpus = typeof observedOpus==='number' ? observedOpus>0 : null;
+  let opusFraction = typeof observedOpus==='number' ? observedOpus : null;
   let opusMessage = '';
   let opusResetTime = null;
 
-  if (shouldProbeOpus) {
+  if (shouldProbeOpus && opusFraction===null) {
     try {
       await generateContent(
         token,
@@ -325,11 +335,9 @@ async function syncSingleAccount(acc, shouldProbeOpus = true) {
         { maxOutputTokens: 1, thinkingBudget: 0 }
       );
       hasOpus = true;
-      opusFraction = 1.0;
       opusMessage = 'Conta confirmada com cota ativa de Claude Opus!';
     } catch (err) {
-      hasOpus = false;
-      opusFraction = 0.0;
+      hasOpus = null;
       const rawError = err.message || '';
       const errData = err.data || {};
       const meta = errData.error?.details?.[0]?.metadata || {};
@@ -337,17 +345,17 @@ async function syncSingleAccount(acc, shouldProbeOpus = true) {
       opusResetTime = meta.quotaResetTimeStamp || null;
 
       if (err.status === 429 || reason === 'QUOTA_EXHAUSTED' || rawError.includes('quota') || rawError.includes('exhausted')) {
+        hasOpus = false;opusFraction=0;
         opusMessage = 'Cota do Claude Opus esgotada no Google (429 QUOTA_EXHAUSTED).';
       } else if (err.status === 403 || rawError.includes('subscription') || rawError.includes('permission')) {
+        hasOpus = false;
         opusMessage = 'Conta sem assinatura/permissão para Claude Opus (requer Google One AI Premium).';
       } else {
         opusMessage = `Opus indisponível: ${reason || err.message || 'Cota não liberada'}`;
       }
     }
   } else {
-    // Preserva o último probe conhecido
-    hasOpus = quotas.hasOpusQuota ?? false;
-    opusFraction = hasOpus ? 1.0 : 0.0;
+    if (hasOpus===null) hasOpus=quotas.models?.[opusModelKey]?.quotaInfo?.hasOpusQuota ?? quotas.hasOpusQuota ?? null;
     opusMessage = quotas.opusMessage ?? '';
     opusResetTime = quotas.models?.[opusModelKey]?.quotaInfo?.resetTime ?? null;
   }
@@ -363,18 +371,19 @@ async function syncSingleAccount(acc, shouldProbeOpus = true) {
     };
   }
   maxOpusTokens = parseInt(quotas.models[opusModelKey].maxTokens || 1048576);
-  const availableOpusTokens = hasOpus ? Math.round(maxOpusTokens * opusFraction) : 0;
-  const consumedOpusTokens = Math.max(0, maxOpusTokens - availableOpusTokens);
+  const availableOpusTokens = null;
+  const consumedOpusTokens = null;
 
   quotas.models[opusModelKey].maxTokens = maxOpusTokens;
   quotas.models[opusModelKey].availableTokens = availableOpusTokens;
   quotas.models[opusModelKey].consumedTokens = consumedOpusTokens;
   quotas.models[opusModelKey].quotaInfo = quotas.models[opusModelKey].quotaInfo || {};
-  quotas.models[opusModelKey].quotaInfo.remainingFraction = opusFraction;
+  if (opusFraction !== null) quotas.models[opusModelKey].quotaInfo.remainingFraction = opusFraction;
+  else delete quotas.models[opusModelKey].quotaInfo.remainingFraction;
   quotas.models[opusModelKey].quotaInfo.hasOpusQuota = hasOpus;
   quotas.models[opusModelKey].quotaInfo.availableTokens = availableOpusTokens;
   quotas.models[opusModelKey].quotaInfo.maxTokens = maxOpusTokens;
-  quotas.models[opusModelKey].quotaInfo.checkedAt = new Date().toISOString();
+  if (opusFresh || shouldProbeOpus) quotas.models[opusModelKey].quotaInfo.checkedAt = new Date().toISOString();
   quotas.models[opusModelKey].quotaInfo.statusMessage = opusMessage;
   if (opusResetTime) quotas.models[opusModelKey].quotaInfo.resetTime = opusResetTime;
 
@@ -382,13 +391,13 @@ async function syncSingleAccount(acc, shouldProbeOpus = true) {
   quotas.opusTokensAvailable = availableOpusTokens;
   quotas.opusTokensMax = maxOpusTokens;
   quotas.opusTokensConsumed = consumedOpusTokens;
-  quotas.opusCheckedAt = new Date().toISOString();
+  if (opusFresh || shouldProbeOpus) quotas.opusCheckedAt = new Date().toISOString();
   quotas.opusMessage = opusMessage;
 
   // 4. Avaliação de saúde geral da conta (Gemini Flash e Sonnet)
   const geminiModel = quotas.models['gemini-3.8-flash-medium'] || quotas.models['gemini-3.8-flash-high'];
-  const remaining = geminiModel?.quotaInfo?.remainingFraction ?? 1.0;
-  const newStatus = remaining > 0.05 ? 'active' : 'quota_exhausted';
+  const remaining = typeof geminiModel?.quotaInfo?.remainingFraction==='number' ? geminiModel.quotaInfo.remainingFraction : null;
+  const newStatus = remaining===null ? (acc.status || 'active') : (remaining > 0.05 ? 'active' : 'quota_exhausted');
 
   // 5. UPDATE ATÔMICO ÚNICO NO BANCO DE DADOS (preserva status 'banned' para não sobrescrever ban do Google)
   await pool.query(
@@ -405,7 +414,7 @@ async function syncSingleAccount(acc, shouldProbeOpus = true) {
     `, [
       acc.id,
       opusModelKey,
-      hasOpus ? 100.00 : 0.00,
+      opusFraction === null ? null : Math.round(opusFraction * 10000) / 100,
       opusResetTime ? new Date(opusResetTime) : null,
       JSON.stringify({ verified: true, hasOpus, availableTokens: availableOpusTokens, maxTokens: maxOpusTokens, message: opusMessage, checkedAt: new Date().toISOString() })
     ]);
@@ -415,9 +424,9 @@ async function syncSingleAccount(acc, shouldProbeOpus = true) {
   if (accountPool) {
     const stat = accountPool.getAccountStats(acc.id);
     if (!stat.modelCooldowns) stat.modelCooldowns = new Map();
-    if (!hasOpus) {
+    if (hasOpus === false) {
       stat.modelCooldowns.set(opusModelKey, Date.now() + 86400000);
-    } else {
+    } else if (hasOpus === true) {
       stat.modelCooldowns.delete(opusModelKey);
     }
   }
@@ -432,7 +441,7 @@ async function syncSingleAccount(acc, shouldProbeOpus = true) {
     availableOpusTokens,
     maxOpusTokens,
     totalModels: Object.keys(quotas.models).length,
-    remainingGemini: (remaining * 100).toFixed(1) + '%',
+    remainingGemini: remaining===null ? null : (remaining * 100).toFixed(1) + '%',
     opusMessage
   };
 }
@@ -691,14 +700,13 @@ async function executeExternalProvider(providerId, targetEngine, incomingMessage
   const [keys] = await pool.query(`
     SELECT * FROM provider_keys 
     WHERE provider_id = ? AND status = 'active' 
-    ORDER BY error_count ASC, last_used_at ASC 
-    LIMIT 1
+    ORDER BY error_count ASC, last_used_at ASC
   `, [providerId]);
 
   if (keys.length === 0) {
     throw new Error(`Nenhuma chave de API ativa encontrada para o provedor "${provider.name}". Cadastre uma chave em Provedores & Keys.`);
   }
-  const pKey = keys[0];
+  const runWithKey = async (pKey) => {
 
   let cleanKey = (pKey.api_key || '').trim();
   if (cleanKey.toLowerCase().startsWith('bearer ')) {
@@ -784,7 +792,7 @@ async function executeExternalProvider(providerId, targetEngine, incomingMessage
   if (!res.ok) {
     const errMsg = json?.error?.message || json?.error || json?.message || `HTTP ${res.status}`;
     await pool.query('UPDATE provider_keys SET error_count = error_count + 1 WHERE id = ?', [pKey.id]).catch(() => { });
-    throw new Error(`[${provider.name}] Erro ao chamar modelo "${targetEngine}": ${errMsg} (Status ${res.status})`);
+    const error=new Error(`[${provider.name}] Erro ao chamar modelo "${targetEngine}": ${errMsg} (Status ${res.status})`);error.status=res.status;throw error;
   }
 
   await pool.query('UPDATE provider_keys SET last_used_at = NOW(), error_count = 0 WHERE id = ?', [pKey.id]).catch(() => { });
@@ -809,7 +817,38 @@ async function executeExternalProvider(providerId, targetEngine, incomingMessage
     }
   }
 
+  if(!replyText && !extToolCalls.length) {const error=new Error(`[${provider.name}] Resposta vazia do modelo.`);error.status=503;throw error;}
   return { replyText, toolCalls: extToolCalls, provider, account: null, finishReason: json.choices?.[0]?.finish_reason };
+  };
+  let last;
+  for (const key of keys) {
+    try {return await runWithKey(key);}
+    catch(error) {
+      last=error;const status=error.status || Number(String(error.message || '').match(/(?:HTTP|Status)\s+(\d{3})/i)?.[1]);
+      if(![401,402,403,404,408,429,500,502,503,504].includes(status) && !/conexão|timeout|timed out|fetch failed|econn/i.test(String(error.message || '')))throw error;
+    }
+  }
+  throw last || new Error(`Nenhuma chave disponível para o provedor ${provider.name}.`);
+}
+
+async function executeSmartRoutes(routes,{messages,contents,system,rawModel,config,tools,maxTokens,stream=false,onChunk=()=>{},signal,accountWaitMs=60000}) {
+  return tentarRotas(routes,async route=>{
+    let emitted=false;
+    try {
+      if(!route.providerId)throw new Error(`Provedor não identificado para ${route.model}; edite o roteamento e selecione o provedor.`);
+      if(route.providerId!==2) {
+        const out=await executeExternalProvider(route.providerId,route.model,messages,system,tools,maxTokens);
+        if(stream && out.replyText){emitted=true;onChunk(out.replyText);}
+        return {replyText:out.replyText || '',toolCalls:out.toolCalls || [],finishReason:out.finishReason,account:null,usedModel:route.model};
+      }
+      if(stream) {
+        const out=await accountPool.executeWithFallbackStream(route.model,contents,system,rawModel,config,chunk=>{if(chunk){emitted=true;onChunk(chunk);}},signal,accountWaitMs,{strict:true});
+        const response=out.googleResp;if(!response?.replyText && !response?.toolCalls?.length) {const error=new Error('Resposta vazia do modelo.');error.status=503;throw error;}return {replyText:response?.replyText || '',toolCalls:response?.toolCalls || [],finishReason:response?.response?.candidates?.[0]?.finishReason || response?.candidates?.[0]?.finishReason,account:out.account,usedModel:out.usedModel || route.model};
+      }
+      const out=await accountPool.executeWithFallback(route.model,contents,system,rawModel,config,{strict:true});
+      const parsed=extractGeminiResponse(out.googleResp);if(!parsed.replyText && !parsed.toolCalls?.length) {const error=new Error('Resposta vazia do modelo.');error.status=503;throw error;}return {...parsed,finishReason:(out.googleResp?.response || out.googleResp)?.candidates?.[0]?.finishReason,account:out.account,usedModel:out.usedModel || route.model};
+    } catch(error) {if(emitted)error.partialOutput=true;throw error;}
+  },{signal,onFallback:(from,error,to)=>console.warn(`[Smart Routing] ${from.model} (provedor ${from.providerId ?? 'não definido'}) indisponível; tentando ${to.model} (provedor ${to.providerId ?? 'não definido'}): ${String(error.message).slice(0,160)}`)});
 }
 
 function openAiFinishReason(reason, hasToolCalls) {
@@ -924,6 +963,7 @@ function classifyRequestComplexity(textSample = '', totalChars = 0, totalMessage
   ];
 
   const heavyKeywords = [
+    'código', 'codigo', 'programação', 'programacao', 'programar', 'implementar', 'depurar',
     'refactor', 'arquitetura', 'architecture', 'debug', 'stack trace', 'exception',
     'segmentation fault', 'memory leak', 'nullpointer', 'traceback', 'algorithm',
     'complexidade', 'sql migration', 'benchmark', 'thread safety', 'concurrency',
@@ -986,7 +1026,7 @@ async function resolveModelConfig(requestedModel, incomingContents = []) {
     row = cachedModel.row;
   } else {
     let [rows] = await pool.query(`
-      SELECT id, model_key, name, provider_id, upstream_model, multiplier, pre_prompt, is_admin_only, is_realtime, is_smart_routing, routing_fast_model, routing_fast_multiplier, routing_medium_model, routing_medium_multiplier, routing_heavy_model, routing_heavy_multiplier
+      SELECT *
       FROM models 
       WHERE (model_key = ? OR name = ? OR upstream_model = ?) AND status = 'active'
       LIMIT 1
@@ -995,7 +1035,7 @@ async function resolveModelConfig(requestedModel, incomingContents = []) {
     if (rows.length === 0) {
       const baseKey = cleanModel.split('-202')[0].replace('-latest', '');
       [rows] = await pool.query(`
-        SELECT id, model_key, name, provider_id, upstream_model, multiplier, pre_prompt, is_admin_only, is_realtime, is_smart_routing, routing_fast_model, routing_fast_multiplier, routing_medium_model, routing_medium_multiplier, routing_heavy_model, routing_heavy_multiplier
+        SELECT *
         FROM models 
         WHERE (model_key LIKE ? OR name LIKE ? OR upstream_model LIKE ?) AND status = 'active'
         LIMIT 1
@@ -1017,6 +1057,7 @@ async function resolveModelConfig(requestedModel, incomingContents = []) {
 
     let chosenEngine = row.upstream_model || cleanModel;
     let chosenMultiplier = parseFloat(row.multiplier) || 1.0;
+    let routeCandidates = null;
 
     // ROTEAMENTO INTELIGENTE (SE HABILITADO NESTE MODELO)
     if (row.is_smart_routing == 1) {
@@ -1043,20 +1084,37 @@ async function resolveModelConfig(requestedModel, incomingContents = []) {
 
       const complexity = classifyRequestComplexity(userPrompt, userPrompt.length, totalMessages);
 
-      if (complexity === 'fast' && row.routing_fast_model) {
+      const routes={};
+      for(const tier of ['fast','medium','heavy']) {
+        const model=String(row[`routing_${tier}_model`] || '').trim();if(!model)continue;
+        let id=Number(row[`routing_${tier}_provider_id`]) || null;
+        if(!id) {
+          const [matches]=await pool.query('SELECT DISTINCT pm.provider_id FROM provider_models pm JOIN providers p ON p.id=pm.provider_id WHERE pm.upstream_model=? AND p.status=\'active\'',[model]);
+          const ids=matches.map(x=>Number(x.provider_id));
+          if(ids.length===1)id=ids[0];
+          else if(ids.length>1)id=null;
+          else if(model===row.upstream_model && row.provider_id)id=Number(row.provider_id);
+          else id=null;
+        }
+        routes[tier]={model,providerId:id,multiplier:parseFloat(row[`routing_${tier}_multiplier`]) || 1};
+      }
+      routeCandidates=ordenarRotas(routes,complexity);
+      if(routeCandidates.length) {chosenEngine=routeCandidates[0].model;chosenMultiplier=routeCandidates[0].multiplier;}
+
+      if (!routeCandidates.length && complexity === 'fast' && row.routing_fast_model) {
         chosenEngine = row.routing_fast_model;
         chosenMultiplier = parseFloat(row.routing_fast_multiplier) || 1.0;
-      } else if (complexity === 'medium' && row.routing_medium_model) {
+      } else if (!routeCandidates.length && complexity === 'medium' && row.routing_medium_model) {
         chosenEngine = row.routing_medium_model;
         chosenMultiplier = parseFloat(row.routing_medium_multiplier) || 1.5;
-      } else if (complexity === 'heavy' && row.routing_heavy_model) {
+      } else if (!routeCandidates.length && complexity === 'heavy' && row.routing_heavy_model) {
         chosenEngine = row.routing_heavy_model;
         chosenMultiplier = parseFloat(row.routing_heavy_multiplier) || 3.0;
       }
     }
 
-    const providerId = row ? row.provider_id : 2;
-    if (providerId === 2 && !row.upstream_model) {
+    const providerId = routeCandidates?.[0]?.providerId ?? (row ? row.provider_id : 2);
+    if (providerId === 2 && !row.upstream_model && !routeCandidates?.length) {
       chosenEngine = normalizeAntigravityModel(chosenEngine);
     }
 
@@ -1067,6 +1125,7 @@ async function resolveModelConfig(requestedModel, incomingContents = []) {
       isAdminOnly: row ? (row.is_admin_only == 1) : false,
       isRealtime: row ? (row.is_realtime == 1) : true,
       multiplier: chosenMultiplier
+      ,routeCandidates
     };
   }
 
@@ -1871,7 +1930,9 @@ app.post(['/v1/messages', '/messages'], async (req, res) => {
   const incomingMessages = req.body.messages || [];
   const contents = convertAnthropicMessagesToGemini(incomingMessages);
 
-  const { targetEngine, customPrompt, providerId, multiplier: modelMultiplier } = await resolveModelConfig(rawModel, contents);
+  let modelConfig;
+  try {modelConfig=await resolveModelConfig(rawModel,contents);} catch(error) {return res.status(400).json({error:{message:error.message || 'Configuração de modelo inválida.'}});}
+  const { targetEngine, customPrompt, providerId, multiplier: modelMultiplier, routeCandidates } = modelConfig;
 
   let systemParts = [];
   if (customPrompt) {
@@ -1899,6 +1960,7 @@ app.post(['/v1/messages', '/messages'], async (req, res) => {
     let toolCalls = [];
     let account = null;
     let usedModel = targetEngine;
+    let usedMultiplier = modelMultiplier;
 
     if (req.body.stream) {
       res.setHeader('Content-Type', 'text/event-stream; charset=utf-8');
@@ -1927,7 +1989,12 @@ app.post(['/v1/messages', '/messages'], async (req, res) => {
       const abortController = new AbortController();
       req.on('close', () => abortController.abort());
 
-      if (providerId && providerId != 2) {
+      if (routeCandidates?.length) {
+        const emitChunk=text=>{if(!text)return;if(!textBlockStarted){textBlockStarted=true;res.write(`event: content_block_start\ndata: ${JSON.stringify({type:'content_block_start',index:blockIndex,content_block:{type:'text',text:''}})}\n\n`);}res.write(`event: content_block_delta\ndata: ${JSON.stringify({type:'content_block_delta',index:blockIndex,delta:{type:'text_delta',text}})}\n\n`);};
+        const out=await executeSmartRoutes(routeCandidates,{messages:incomingMessages,contents,system:finalSystemInstruction,rawModel,config:customConfig,tools:req.body.tools,maxTokens:req.body.max_tokens,stream:true,onChunk:emitChunk,signal:abortController.signal});
+        replyText=out.replyText;toolCalls=out.toolCalls;account=out.account;usedModel=out.usedModel;usedMultiplier=out.route.multiplier;
+        if(textBlockStarted){res.write(`event: content_block_stop\ndata: ${JSON.stringify({type:'content_block_stop',index:blockIndex})}\n\n`);blockIndex++;}
+      } else if (providerId && providerId != 2) {
         const extResult = await executeExternalProvider(providerId, targetEngine, incomingMessages, finalSystemInstruction, req.body.tools);
         replyText = extResult.replyText;
         toolCalls = extResult.toolCalls || [];
@@ -2013,11 +2080,14 @@ app.post(['/v1/messages', '/messages'], async (req, res) => {
       res.write(`event: message_stop\ndata: {"type":"message_stop"}\n\n`);
       res.end();
 
-      logUsage(userKey, rawModel, inputTokens, outputTokens, account?.id || null, modelMultiplier, usedModel);
+      logUsage(userKey, rawModel, inputTokens, outputTokens, account?.id || null, usedMultiplier, usedModel);
       return;
     }
 
-    if (providerId && providerId != 2) {
+    if (routeCandidates?.length) {
+      const out=await executeSmartRoutes(routeCandidates,{messages:incomingMessages,contents,system:finalSystemInstruction,rawModel,config:customConfig,tools:req.body.tools,maxTokens:req.body.max_tokens});
+      replyText=out.replyText;toolCalls=out.toolCalls;account=out.account;usedModel=out.usedModel;usedMultiplier=out.route.multiplier;
+    } else if (providerId && providerId != 2) {
       // PROVEDOR EXTERNO (ex: api.b.ai)
       const extResult = await executeExternalProvider(providerId, targetEngine, incomingMessages, finalSystemInstruction, req.body.tools);
       replyText = extResult.replyText;
@@ -2066,9 +2136,10 @@ app.post(['/v1/messages', '/messages'], async (req, res) => {
       }
     });
 
-    logUsage(userKey, rawModel, inputTokens, outputTokens, account?.id || null, modelMultiplier, usedModel);
+    logUsage(userKey, rawModel, inputTokens, outputTokens, account?.id || null, usedMultiplier, usedModel);
   } catch (err) {
     console.error(`[Anthropic /v1/messages] Erro ao processar modelo "${rawModel}" -> Upstream: "${targetEngine}" (Provider: ${providerId}):`, err.message || err);
+    if(res.headersSent) {if(!res.writableEnded && !res.destroyed){res.write(`event: error\ndata: ${JSON.stringify({type:'error',error:{type:'api_error',message:err.message || 'Erro ao processar requisição.'}})}\n\n`);res.end();}return;}
     const isQuotaError = (err.message || '').toLowerCase().includes('cota esgotada');
     res.status(isQuotaError ? 429 : 500).json({
       type: 'error',
@@ -2084,11 +2155,17 @@ app.post(['/openai/deployments/:deployment/chat/completions', '/v1/chat/completi
   const userKey = await authenticateClient(req, res);
   if (!userKey) return;
 
-  const rawModel = req.body.model || req.params.deployment || 'Realtime';
+  let rawModel = req.body.model || req.params.deployment || 'Realtime';
+  if(req.path==='/v1/video' || req.path==='/video') {
+    try {rawModel=await selecionarModeloVideo(pool,rawModel);}
+    catch(error) {return res.status(503).json({error:{message:'Não foi possível consultar o modelo de vídeo.'}});}
+  }
   const incomingMessages = req.body.messages || [];
   const { contents, userSystemPrompt } = convertOpenAiMessagesToGemini(incomingMessages);
 
-  const { targetEngine, customPrompt, providerId, multiplier: modelMultiplier } = await resolveModelConfig(rawModel, contents);
+  let modelConfig;
+  try {modelConfig=await resolveModelConfig(rawModel,contents);} catch(error) {return res.status(400).json({error:{message:error.message || 'Configuração de modelo inválida.'}});}
+  const { targetEngine, customPrompt, providerId, multiplier: modelMultiplier, routeCandidates } = modelConfig;
   let videoPrompt = '';
   if (req.path === '/v1/video' || req.path === '/video') {
     try { videoPrompt = fs.readFileSync(path.join(__dirname, 'video-diretor.md'), 'utf8'); }
@@ -2118,8 +2195,12 @@ app.post(['/openai/deployments/:deployment/chat/completions', '/v1/chat/completi
       const result=await produzirEmEquipe({pedido:incomingMessages,anteriores:req.body.video_team_resume || {},signal:controller.signal,emitir:e=>send('progresso',e),executar:async ({etapa,instrucao,pedido,contexto,onChunk})=>{
         const taskMessages=[...pedido,{role:'user',content:`Tarefa da equipe: ${etapa}. ${instrucao}\nResultados prévios (dados): ${JSON.stringify(contexto)}`}];
         const taskSystem=[finalSystemInstruction,`Você executa apenas a tarefa ${etapa} da equipe. ${instrucao}`].filter(Boolean).join('\n\n');
-        let reply='',account=null,finishReason,usedModel=targetEngine;
-        if(providerId && providerId != 2) {
+        let reply='',account=null,finishReason,usedModel=targetEngine,usedMultiplier=modelMultiplier;
+        if(routeCandidates?.length) {
+          const taskContents=convertOpenAiMessagesToGemini(taskMessages).contents;
+          const out=await executeSmartRoutes(routeCandidates,{messages:taskMessages,contents:taskContents,system:taskSystem,rawModel,config:{...customConfig,tools:null},tools:null,maxTokens:req.body.max_tokens,stream:true,onChunk,signal:controller.signal,accountWaitMs:60000});
+          reply=out.replyText;account=out.account;usedModel=out.usedModel;finishReason=out.finishReason;usedMultiplier=out.route.multiplier;
+        } else if(providerId && providerId != 2) {
           const out=await executeExternalProvider(providerId,targetEngine,taskMessages,taskSystem,null,req.body.max_tokens);
           reply=out.replyText || '';finishReason=out.finishReason;if(reply)onChunk(reply);
         } else {
@@ -2127,7 +2208,7 @@ app.post(['/openai/deployments/:deployment/chat/completions', '/v1/chat/completi
           const out=await executeWithFallbackStream(targetEngine,taskContents,taskSystem,rawModel,{...customConfig,tools:null},chunk=>{if(chunk)onChunk(chunk);},controller.signal,600000);
           account=out.account;usedModel=out.usedModel || targetEngine;reply=out.googleResp?.replyText || '';finishReason=out.googleResp?.response?.candidates?.[0]?.finishReason || out.googleResp?.candidates?.[0]?.finishReason;
         }
-        await logUsage(userKey,rawModel,Math.ceil(JSON.stringify(taskMessages).length/4),Math.ceil(reply.length/4),account?.id || null,modelMultiplier,usedModel);
+        await logUsage(userKey,rawModel,Math.ceil(JSON.stringify(taskMessages).length/4),Math.ceil(reply.length/4),account?.id || null,usedMultiplier,usedModel);
         if(openAiFinishReason(finishReason,false)==='length') throw new Error(`A etapa ${etapa} foi cortada antes de concluir.`);
         return reply;
       }});
@@ -2146,6 +2227,7 @@ app.post(['/openai/deployments/:deployment/chat/completions', '/v1/chat/completi
     let account = null;
     let usedModel = targetEngine;
     let upstreamFinishReason;
+    let usedMultiplier = modelMultiplier;
 
     if (req.body.stream) {
       res.setHeader('Content-Type', 'text/event-stream; charset=utf-8');
@@ -2170,7 +2252,11 @@ app.post(['/openai/deployments/:deployment/chat/completions', '/v1/chat/completi
       };
       res.write(`data: ${JSON.stringify(startChunk)}\n\n`);
 
-      if (providerId && providerId != 2) {
+      if (routeCandidates?.length) {
+        const emitChunk=textChunk=>{if(textChunk)res.write(`data: ${JSON.stringify({id:compId,object:'chat.completion.chunk',created:Math.floor(Date.now()/1000),model:rawModel,choices:[{index:0,delta:{content:textChunk},finish_reason:null}]})}\n\n`);};
+        const out=await executeSmartRoutes(routeCandidates,{messages:incomingMessages,contents,system:finalSystemInstruction,rawModel,config:customConfig,tools:rawTools,maxTokens:req.body.max_tokens,stream:true,onChunk:emitChunk,signal:abortController.signal});
+        replyText=out.replyText;toolCalls=out.toolCalls;account=out.account;usedModel=out.usedModel;upstreamFinishReason=out.finishReason;usedMultiplier=out.route.multiplier;
+      } else if (providerId && providerId != 2) {
         const extResult = await executeExternalProvider(providerId, targetEngine, incomingMessages, finalSystemInstruction, rawTools, req.body.max_tokens);
         replyText = extResult.replyText;
         toolCalls = extResult.toolCalls || [];
@@ -2258,11 +2344,14 @@ app.post(['/openai/deployments/:deployment/chat/completions', '/v1/chat/completi
 
       const inputTokens = Math.ceil(JSON.stringify(contents).length / 4);
       const outputTokens = Math.ceil((replyText.length + JSON.stringify(toolCalls).length) / 4);
-      logUsage(userKey, rawModel, inputTokens, outputTokens, account?.id || null, modelMultiplier, usedModel);
+      logUsage(userKey, rawModel, inputTokens, outputTokens, account?.id || null, usedMultiplier, usedModel);
       return;
     }
 
-    if (providerId && providerId != 2) {
+    if (routeCandidates?.length) {
+      const out=await executeSmartRoutes(routeCandidates,{messages:incomingMessages,contents,system:finalSystemInstruction,rawModel,config:customConfig,tools:rawTools,maxTokens:req.body.max_tokens});
+      replyText=out.replyText;toolCalls=out.toolCalls;account=out.account;usedModel=out.usedModel;upstreamFinishReason=out.finishReason;usedMultiplier=out.route.multiplier;
+    } else if (providerId && providerId != 2) {
       // PROVEDOR EXTERNO (ex: api.b.ai)
       const extResult = await executeExternalProvider(providerId, targetEngine, incomingMessages, finalSystemInstruction, rawTools, req.body.max_tokens);
       replyText = extResult.replyText;
@@ -2315,13 +2404,16 @@ app.post(['/openai/deployments/:deployment/chat/completions', '/v1/chat/completi
       }
     });
 
-    logUsage(userKey, rawModel, inputTokens, outputTokens, account?.id || null, modelMultiplier, usedModel);
+    logUsage(userKey, rawModel, inputTokens, outputTokens, account?.id || null, usedMultiplier, usedModel);
   } catch (err) {
     console.error(`[OpenAI /v1/chat/completions] Erro ao processar modelo "${rawModel}" -> Upstream: "${targetEngine}" (Provider: ${providerId}):`, err.message || err);
     if (rawTools && rawTools.length > 0) {
       console.error(`[OpenAI Debug] Total tools recebidos: ${rawTools.length}`);
     }
-    if (res.headersSent) return;
+    if (res.headersSent) {
+      if (!res.writableEnded && !res.destroyed) {res.write(`data: ${JSON.stringify({error:{message:err.message || 'Erro ao processar requisição.',type:'api_error'}})}\n\n`);res.write('data: [DONE]\n\n');res.end();}
+      return;
+    }
     const isQuotaError = (err.message || '').toLowerCase().includes('cota esgotada');
     res.status(isQuotaError ? 429 : 500).json({
       error: { message: err.message || 'Erro ao processar requisição.', type: isQuotaError ? 'rate_limit_error' : 'api_error' }
