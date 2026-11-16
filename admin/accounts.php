@@ -352,6 +352,9 @@ foreach ($accounts as $acc) {
                 'provider' => $provider,
                 'fractionSum' => 0,
                 'fractionCount' => 0,
+                'estimatedAvailable' => 0,
+                'estimatedCapacity' => 0,
+                'estimatedCount' => 0,
                 'quotaAmounts' => [],
                 'activeAccountsCount' => 0,
                 'nextResetTime' => null
@@ -381,6 +384,10 @@ foreach ($accounts as $acc) {
         if (isset($mInfo['quotaInfo']['remainingFraction']) && is_numeric($mInfo['quotaInfo']['remainingFraction'])) {
             $poolModelStats[$mKey]['fractionSum'] += max(0, min(1, (float)$fraction));
             $poolModelStats[$mKey]['fractionCount']++;
+            $estimateBase = isset($mInfo['maxTokens']) && is_numeric($mInfo['maxTokens']) && $mInfo['maxTokens'] > 0 ? (int)$mInfo['maxTokens'] : 1048576;
+            $poolModelStats[$mKey]['estimatedAvailable'] += round($estimateBase * max(0, min(1, $fraction)));
+            $poolModelStats[$mKey]['estimatedCapacity'] += $estimateBase;
+            $poolModelStats[$mKey]['estimatedCount']++;
         }
         if (isset($mInfo['quotaInfo']['remainingFraction']) && is_numeric($mInfo['quotaInfo']['remainingFraction']) && $fraction > 0.05) {
             $poolModelStats[$mKey]['activeAccountsCount']++;
@@ -660,6 +667,11 @@ require_once __DIR__ . '/includes/header.php';
                             </div>
                         </div>
 
+                        <div class="px-2.5 py-2 rounded-xl border border-[var(--border-color)] text-xs" style="background: var(--bg-surface-elevated);">
+                            <div class="text-[var(--text-muted)]">Tokens disponíveis estimados (<?= $pStat['estimatedCount'] ?> contas)</div>
+                            <strong class="text-emerald-400"><?= $pStat['estimatedCount'] ? number_format($pStat['estimatedAvailable'], 0, ',', '.') . ' / ' . number_format($pStat['estimatedCapacity'], 0, ',', '.') . ' tokens' : 'Indisponível' ?></strong>
+                            <div class="text-[10px] text-[var(--text-muted)]">Estimativa: percentual × limite do modelo; não é saldo confirmado pelo Google.</div>
+                        </div>
                         <div class="px-2.5 py-2 rounded-xl border border-[var(--border-color)] text-xs" style="background: var(--bg-surface-elevated);">
                             <div class="font-bold text-[var(--text-heading)]">Saldo disponível informado pelo Google</div>
                             <?php if (!$pStat['quotaAmounts']): ?>
