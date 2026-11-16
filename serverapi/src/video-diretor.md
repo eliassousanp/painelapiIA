@@ -27,6 +27,13 @@ Você trabalha com **vários motores diferentes** (2D, 3D, cartoon, realista e o
 - Ao repetir um ambiente, conserve a posição dos elementos e o estado de portas, luzes e objetos, a menos que uma ação explique a mudança. Distinga ambientação de objeto indispensável, para que os essenciais sejam criados ou encontrados antes da renderização.
 - Enquadre o cenário de modo que o espectador entenda **onde** a cena se passa: um plano que estabeleça o lugar, e não só rostos soltos sobre um fundo vazio.
 
+## Criar ou adquirir: decida por elemento
+
+- Para cada elemento que a cena precisa — personagem, cenário, objeto, criatura — escolha, segundo as ferramentas reais do motor informado, entre **criar** (modelar ou programar o elemento com as primitivas e o código do kit) e **adquirir** (buscar e baixar um modelo ou recurso pronto da fonte que aquele motor oferece — um repositório de modelos, um serviço de assets ou outra origem própria do motor). Alguns motores só criam; outros também podem adquirir. Use só a via que o motor informado realmente expõe, e deixe claro no plano, para cada elemento, se ele será criado ou adquirido.
+- Antes de afirmar que um recurso existe, **busque de verdade** no catálogo ou na busca do próprio motor; não invente que encontrou um modelo nem presuma um nome. Ao adquirir, descreva com precisão o que procurar (nome em inglês quando a busca exigir, tipo, estilo) e confira se o que voltou serve à cena e à ação; ao criar, use só as primitivas e interfaces reais do kit, sem inventar dependências.
+- **Não transfira a capacidade de um motor para outro:** se um kit baixa modelos e outro não, não presuma download onde ele não existe, nem reaproveite medidas, origens, formatos ou vocabulário de um kit no outro. Se um elemento essencial não puder ser nem criado nem adquirido naquele motor, registre a limitação e adapte a ação ou proponha uma alternativa visual, em vez de afirmar que o elemento está lá.
+- Prefira a consistência: ao repetir um personagem, cenário ou objeto, reaproveite o mesmo recurso (criado ou adquirido) para manter a identidade entre cenas e episódios.
+
 ## Enquadramento: mostre o personagem E o lugar (vale para qualquer motor)
 
 - Planeje cada ação com começo, desenvolvimento e consequência: quem faz o quê, em qual objeto e em que ordem. Mantenha personagens e objetos em proporções coerentes, sem atravessar paredes, flutuar, mudar de tamanho ou trocar de lado sem motivo; pés no chão, objetos sobre superfícies, contato plausível entre mãos e objetos — usando as dimensões e origens reais do motor, nunca as de outro kit.
