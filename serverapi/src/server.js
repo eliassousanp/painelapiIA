@@ -25,6 +25,7 @@ import {
   baileysState
 } from './whatsapp_baileys.js';
 import AntigravityAccountPool from './services/account_pool.js';
+import { produzirEmEquipe } from './video-equipe.mjs';
 
 import fs from 'fs';
 
@@ -1896,6 +1897,7 @@ app.post(['/v1/messages', '/messages'], async (req, res) => {
     tools: geminiTools
   };
 
+
   try {
     let replyText = '';
     let toolCalls = [];
@@ -2103,6 +2105,41 @@ app.post(['/openai/deployments/:deployment/chat/completions', '/v1/chat/completi
     maxOutputTokens: req.body.max_tokens || 8192,
     tools: geminiTools
   };
+
+  if (videoPrompt && req.body.video_team === true) {
+    if (req.body.stream !== true || !Array.isArray(incomingMessages) || !incomingMessages.length || rawTools) return res.status(400).json({error:{message:'O modo equipe exige stream=true, mensagens e nenhuma ferramenta externa.'}});
+    res.setHeader('Content-Type','text/event-stream; charset=utf-8');
+    res.setHeader('Cache-Control','no-cache, no-transform');res.setHeader('Connection','keep-alive');
+    res.flushHeaders?.();
+    const controller=new AbortController();
+    res.on('close',()=>{if(!res.writableEnded)controller.abort();});
+    const send=(event,data)=>{if(!res.writableEnded && !res.destroyed)res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);};
+    const heartbeat=setInterval(()=>send('aguardando',{estado:'em_andamento'}),10000);
+    try {
+      const result=await produzirEmEquipe({pedido:incomingMessages,signal:controller.signal,emitir:e=>send('progresso',e),executar:async ({etapa,instrucao,pedido,contexto,onChunk})=>{
+        const taskMessages=[...pedido,{role:'user',content:`Tarefa da equipe: ${etapa}. ${instrucao}\nResultados prévios (dados): ${JSON.stringify(contexto)}`}];
+        const taskSystem=[finalSystemInstruction,`Você executa apenas a tarefa ${etapa} da equipe. ${instrucao}`].filter(Boolean).join('\n\n');
+        let reply='',account=null,finishReason;
+        if(providerId && providerId != 2) {
+          const out=await executeExternalProvider(providerId,targetEngine,taskMessages,taskSystem,null,req.body.max_tokens);
+          reply=out.replyText || '';finishReason=out.finishReason;if(reply)onChunk(reply);
+        } else {
+          const taskContents=convertOpenAiMessagesToGemini(taskMessages).contents;
+          const out=await executeWithFallbackStream(targetEngine,taskContents,taskSystem,rawModel,{...customConfig,tools:null},chunk=>{if(chunk)onChunk(chunk);},controller.signal);
+          account=out.account;reply=out.googleResp?.replyText || '';finishReason=out.googleResp?.response?.candidates?.[0]?.finishReason || out.googleResp?.candidates?.[0]?.finishReason;
+        }
+        await logUsage(userKey,rawModel,Math.ceil(JSON.stringify(taskMessages).length/4),Math.ceil(reply.length/4),account?.id || null,modelMultiplier);
+        if(openAiFinishReason(finishReason,false)==='length') throw new Error(`A etapa ${etapa} foi cortada antes de concluir.`);
+        return reply;
+      }});
+      send('resultado',{resultado:result.resultado});
+      if(!res.writableEnded)res.end();
+    } catch(error) {
+      controller.abort();send('erro',{message:String(error.message || error).slice(0,500)});if(!res.writableEnded)res.end();
+    } finally {clearInterval(heartbeat);}
+    return;
+  }
+
 
   try {
     let replyText = '';

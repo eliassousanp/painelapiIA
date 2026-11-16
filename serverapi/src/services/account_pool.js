@@ -215,17 +215,20 @@ class AntigravityAccountPool {
 
         // Se a conta tem espaço de concorrência, não estourou o RPM e respeitou o espaçamento
         if (stat.activeRequests < limits.maxConcurrent && rpm < limits.maxRpm && spacedEnough) {
-          // Token válido
-          const tokenOk = await this.ensureTokenFresh(account);
-          if (!tokenOk) continue;
-
-          // Reserva o slot
+          // Reserva antes de aguardar a atualização do token: chamadas concorrentes
+          // devem enxergar a vaga ocupada antes de escolher outra conta.
           stat.activeRequests++;
           stat.requestTimestamps.push(Date.now());
           stat.totalCalls++;
           stat.lastUsedAt = new Date();
-
-          return account;
+          try {
+            const tokenOk = await this.ensureTokenFresh(account);
+            if (tokenOk) return account;
+          } catch (error) {
+            this.releaseAccount(account.id);
+            throw error;
+          }
+          this.releaseAccount(account.id);
         }
       }
 
@@ -233,16 +236,7 @@ class AntigravityAccountPool {
       await new Promise(res => setTimeout(res, 250));
     }
 
-    // Fallback: se passou o tempo de espera, pega a conta com menor concorrência atual
-    const accounts = await this.getAllActiveAccounts();
-    const ranked = this.rankAccounts(accounts, modelKey);
-    const chosen = ranked[0].account;
-    const stat = this.getAccountStats(chosen.id);
-    stat.activeRequests++;
-    stat.requestTimestamps.push(Date.now());
-    stat.totalCalls++;
-    await this.ensureTokenFresh(chosen);
-    return chosen;
+    throw new Error('Nenhuma conta disponível dentro dos limites do modelo; tente novamente quando houver capacidade.');
   }
 
   releaseAccount(accId) {
