@@ -6,9 +6,10 @@ afinando o **diretor** (`serverapi/src/video-diretor.md`) e a **equipe**
 (`serverapi/src/video-equipe.mjs`). Fora de escopo agora: propagar pros outros
 motores do original (`C:\ai-lab\hub`).
 
-**Restrições:** não subir o gateway local (reconecta WhatsApp de produção).
-Não ler/expor `.env`, chaves ou segredos. Deploy na VPS é pelo caminho sancionado
-(pasta `brlove.online` → `git pull` → `pm2 restart src`).
+**Restrições:** Não ler/expor `.env`, chaves ou segredos. Deploy na VPS é pelo
+caminho sancionado (pasta `brlove.online` → `git pull` → `pm2 restart src`).
+_(Atualizado: você liberou subir o gateway local p/ teste — e confirmou-se que o
+local NÃO tem sessão WhatsApp de produção: `[Baileys] Nenhuma sessão ativa`.)_
 
 ---
 
@@ -41,14 +42,34 @@ Não ler/expor `.env`, chaves ou segredos. Deploy na VPS é pelo caminho sancion
 
 - [x] **T6 — Commit + push** (`origin/main`)
 
-- [ ] **T7 — Deploy na VPS** — ⚠️ depende do usuário
-      `brlove.online` → `git pull` → `pm2 restart src`.
-      Bloqueado aqui: acesso ao Bitvise foi negado e, mesmo liberado, o
-      computer-use não deixa digitar em terminal (tier "click").
+- [ ] **T7 — Deploy na VPS** — ⚠️ SÓ VOCÊ CONSEGUE (cole no Bitvise que já está aberto)
+      Bloqueado pra mim: acesso ao Bitvise foi negado 2× e, mesmo liberado, o
+      computer-use não deixa digitar em terminal (tier "click"). No terminal da
+      VPS, rode:
+      ```
+      cd ~/brlove.online && git pull && pm2 restart src
+      ```
+      (ajuste `~/brlove.online` se a pasta estiver em outro caminho). Commit a
+      puxar: `1e1e97d`. Quando terminar, me avisa que eu sigo pro T8.
 
-- [ ] **T8 — Teste de render + análise** — depende do T7
-      Gerar vídeo ("A Caixa de Ferro"), conferir se o personagem fica enquadrado
-      e com linha de visão livre. Se bom, não mexe; se ruim, volta e ensina o diretor.
+- [x] **T8b — Bug de bloqueio achado e corrigido NA API (`server.js`)**
+      Ao rodar o teste, o render quebrava antes mesmo do enquadramento: o modelo
+      devolvia um bloco `<thinking>…</thinking>` na frente do código, então o
+      `story.js` gerado começava com `<` → `SyntaxError: Unexpected token '<'`.
+      Causa raiz: a rota `/v1/video` **nunca chamava** o `stripThinking()` que já
+      existe no gateway (ele só limpava o chat normal). Correção mínima: ligar o
+      `stripThinking` **só na saída de vídeo** (escopo por `isVideo`), sem tocar em
+      `/v1/chat/completions`. `node --check` passou; gateway reiniciado. Isso é
+      correção **na API brlove**, não no painel. _(Falta commitar como commit
+      próprio e subir junto no deploy — ver T7.)_
+
+- [~] **T8 — Teste de render + análise** (RODANDO LIMPO no localhost)
+      Teste contra o diretor corrigido no **localhost:3000** (mesma API da VPS).
+      Setup: chave local do banco + hub apontado pro localhost (com backup,
+      reversível). "A Caixa de Ferro" (13 cenas): narração recuperada do cache, e
+      agora o `story.js` **gera limpo** (sem `<thinking>`, sem erro de sintaxe) —
+      prova de que o bug de bloqueio sumiu. Aguardando concluir roman.js/main.js →
+      render mp4 → conferir enquadramento/linha de visão. Ao fim, restaurar hub.db.
 
 ---
 
@@ -56,5 +77,7 @@ Não ler/expor `.env`, chaves ou segredos. Deploy na VPS é pelo caminho sancion
 
 - _(início)_ Task criada.
 - T1–T5 feitos. Enquadramento virou exigência de código no diretor e na equipe.
-- T6: commit + push pra `origin/main`.
-- T7/T8 aguardando: deploy na VPS (precisa de você) e render de teste.
+- T6: commit `1e1e97d` enviado (`9945585..1e1e97d`, `origin/main`).
+- T8b: achado o bug que travava o render — `/v1/video` não chamava `stripThinking`.
+  Corrigido no `server.js` (só na saída de vídeo). Render passou a gerar código limpo.
+- T7/T8 aguardando: deploy na VPS (precisa de você) e conclusão do render de teste.
