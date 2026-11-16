@@ -165,8 +165,10 @@ class AntigravityAccountPool {
                 remainingFraction = 0.0;
               }
               // Se tiver data de reset no futuro e a cota for baixa, trata como esgotada
-              if (matchedModel.quotaInfo.resetTime && new Date(matchedModel.quotaInfo.resetTime) > new Date()) {
-                if (remainingFraction <= 0.05) remainingFraction = 0.0;
+              if (matchedModel.quotaInfo.resetTime) {
+                const resetAt = new Date(matchedModel.quotaInfo.resetTime).getTime();
+                if (Number.isFinite(resetAt) && resetAt <= now && remainingFraction <= 0.05) remainingFraction = 1.0;
+                else if (resetAt > now && remainingFraction <= 0.05) remainingFraction = 0.0;
               }
             }
           }
@@ -291,6 +293,20 @@ class AntigravityAccountPool {
 
     if (isDailyQuotaExhausted && actualModel) {
       console.warn(`[Pool Manager] Cota do modelo "${actualModel}" ESGOTADA no Google para conta #${accId} (${accountEmail || 'N/A'}). Reset previsto: ${meta.quotaResetTimeStamp || meta.quotaResetDelay || 'N/A'}. Registrando no banco...`);
+      // Sinalize antes de consultar o banco: outras chamadas paralelas não devem
+      // selecionar esta conta enquanto o registro persistente está sendo salvo.
+      let cooldownMs = 3600000;
+      if (meta.quotaResetTimeStamp) {
+        const resetDiff = new Date(meta.quotaResetTimeStamp).getTime() - Date.now();
+        if (resetDiff > 0) cooldownMs = Math.min(resetDiff, 7 * 24 * 3600 * 1000);
+      }
+      if (!stat.modelCooldowns) stat.modelCooldowns = new Map();
+      stat.modelCooldowns.set(actualModel, Date.now() + cooldownMs);
+      if (actualModel.includes('claude')) {
+        stat.modelCooldowns.set('claude', Date.now() + cooldownMs);
+        stat.modelCooldowns.set('claude-sonnet-4-6', Date.now() + cooldownMs);
+        if (actualModel.includes('opus')) stat.modelCooldowns.set('claude-opus-4-6-thinking', Date.now() + cooldownMs);
+      }
       try {
         const [rows] = await this.pool.query('SELECT quotas_json FROM antigravity_accounts WHERE id = ?', [accId]);
         if (rows.length > 0) {
@@ -318,23 +334,6 @@ class AntigravityAccountPool {
         console.error('[Pool Manager] Erro ao gravar cota esgotada:', dbErr.message);
       }
 
-      // Aplica cooldown prolongado em memória especificamente para o modelo esgotado (não trava a conta inteira para outros modelos como Gemini Flash)
-      let cooldownMs = 3600000; // 1 hora padrão
-      if (meta.quotaResetTimeStamp) {
-        const resetDiff = new Date(meta.quotaResetTimeStamp).getTime() - Date.now();
-        if (resetDiff > 0) {
-          cooldownMs = Math.min(resetDiff, 7 * 24 * 3600 * 1000);
-        }
-      }
-      if (!stat.modelCooldowns) stat.modelCooldowns = new Map();
-      stat.modelCooldowns.set(actualModel, Date.now() + cooldownMs);
-      if (actualModel.includes('claude')) {
-        stat.modelCooldowns.set('claude', Date.now() + cooldownMs);
-        stat.modelCooldowns.set('claude-sonnet-4-6', Date.now() + cooldownMs);
-        if (actualModel.includes('opus')) {
-          stat.modelCooldowns.set('claude-opus-4-6-thinking', Date.now() + cooldownMs);
-        }
-      }
     } else if (status === 429 || status === 503 || msg.includes('quota') || msg.includes('rate') || msg.includes('resource_exhausted')) {
       // Cooldown curto de 5 segundos em memória para desobstruir a janela de burst
       stat.cooldownUntil = Date.now() + 5000;
@@ -357,7 +356,7 @@ class AntigravityAccountPool {
     for (let attempt = 0; attempt < accounts.length; attempt++) {
       let account = null;
       try {
-        account = await this.acquireAccount(targetEngine, 4000);
+        account = await this.acquireAccount(targetEngine, 60000);
         const googleResp = await generateContent(
           account.access_token,
           account.project_id || 'aicode-consumers',
@@ -367,7 +366,7 @@ class AntigravityAccountPool {
           customConfig
         );
         this.releaseAccount(account.id);
-        return { googleResp, account };
+        return { googleResp, account, usedModel: targetEngine };
       } catch (err) {
         if (account) {
           this.releaseAccount(account.id);
@@ -420,7 +419,7 @@ class AntigravityAccountPool {
   /**
    * Executa chamada via Streaming com Fallback inteligente
    */
-  async executeWithFallbackStream(targetEngine, contents, systemInstruction, requestedModel, customConfig, onChunk, abortSignal, accountWaitMs = 4000) {
+  async executeWithFallbackStream(targetEngine, contents, systemInstruction, requestedModel, customConfig, onChunk, abortSignal, accountWaitMs = 60000) {
     if (targetEngine.includes('3.6') || targetEngine.includes('3.7')) {
       targetEngine = 'gemini-3.8-flash-medium';
     }
@@ -443,7 +442,7 @@ class AntigravityAccountPool {
           abortSignal
         );
         this.releaseAccount(account.id);
-        return { googleResp: streamRes, account };
+        return { googleResp: streamRes, account, usedModel: targetEngine };
       } catch (err) {
         if (account) {
           this.releaseAccount(account.id);

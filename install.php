@@ -241,6 +241,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                   `user_id` INT NOT NULL,
                   `api_key_id` INT NOT NULL,
                   `model` VARCHAR(100) DEFAULT 'claude-3-5-sonnet',
+                  `actual_model` VARCHAR(100) DEFAULT NULL,
+                  `account_id` INT DEFAULT NULL,
                   `prompt_tokens` INT DEFAULT 0,
                   `completion_tokens` INT DEFAULT 0,
                   `total_tokens` INT DEFAULT 0,

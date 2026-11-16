@@ -221,7 +221,7 @@ function getAccountOpusQuotaStatus($acc) {
             'consumed_tokens' => $consumedTokens,
             'percentage' => $percentage,
             'tokens_formatted' => number_format($availableTokens, 0, ',', '.') . ' / ' . number_format($maxTokens, 0, ',', '.') . ' tk',
-            'label' => '💎 Opus: ' . number_format($availableTokens, 0, ',', '.') . ' / ' . number_format($maxTokens, 0, ',', '.') . ' tk (' . $percentage . '%)',
+            'label' => '💎 Opus: cota confirmada (' . $percentage . '% informado)',
             'badge_class' => 'bg-gradient-to-r from-pink-500/20 to-purple-500/20 border-pink-500/40 text-pink-300 shadow-md shadow-pink-500/10',
             'icon' => 'fa-solid fa-gem text-pink-400',
             'checked_at' => $checkedAt,
@@ -240,7 +240,7 @@ function getAccountOpusQuotaStatus($acc) {
         'consumed_tokens' => $consumedTokens,
         'percentage' => 0,
         'tokens_formatted' => '0 / ' . number_format($maxTokens, 0, ',', '.') . ' tk',
-        'label' => '🚫 Opus: 0 / ' . number_format($maxTokens, 0, ',', '.') . ' tk (0% - Sem cota)',
+        'label' => '🚫 Opus: sem cota confirmada',
         'badge_class' => 'bg-rose-500/10 border-rose-500/20 text-rose-400',
         'icon' => 'fa-solid fa-ban text-rose-400',
         'checked_at' => $checkedAt,
@@ -281,14 +281,21 @@ foreach ($accounts as $acc) {
 }
 $secondsSinceLastSync = $latestSyncTimestamp > 0 ? (time() - $latestSyncTimestamp) : 999999;
 
-// Buscar histórico de tokens consumidos por modelo em usage_logs
-$modelUsageStats = [];
-$stmtUsage = $db->query("SELECT model, SUM(total_tokens) as tokens_spent, COUNT(*) as req_count FROM usage_logs GROUP BY model");
-while ($rowU = $stmtUsage->fetch(PDO::FETCH_ASSOC)) {
-    $modelUsageStats[$rowU['model']] = [
-        'tokens' => (int)$rowU['tokens_spent'],
-        'reqs' => (int)$rowU['req_count']
-    ];
+// Desde a migração, cada chamada registra o modelo e a conta realmente usados.
+// Registros anteriores não podem ser atribuídos com segurança a um modelo efetivo.
+$actualUsage = [];
+$accountUsage = [];
+$actualUsageAvailable = true;
+try {
+    $stmtActual = $db->query("SELECT actual_model, account_id, SUM(prompt_tokens + completion_tokens) AS tokens_spent, COUNT(*) AS req_count FROM usage_logs WHERE actual_model IS NOT NULL GROUP BY actual_model, account_id");
+    while ($u = $stmtActual->fetch(PDO::FETCH_ASSOC)) {
+        $model = $u['actual_model'];
+        $tokens = (int)$u['tokens_spent'];
+        $actualUsage[$model] = ($actualUsage[$model] ?? 0) + $tokens;
+        if ($u['account_id'] !== null) $accountUsage[(int)$u['account_id']][$model] = $tokens;
+    }
+} catch (PDOException $e) {
+    $actualUsageAvailable = false;
 }
 
 // Buscar métricas em tempo real do pool no Gateway Node (RPM, concorrência e cooldowns)
@@ -343,16 +350,14 @@ foreach ($accounts as $acc) {
                 'id' => $mKey,
                 'displayName' => $mInfo['displayName'] ?? $mKey,
                 'provider' => $provider,
-                'totalAvailableTokens' => 0,
-                'totalConsumedTokens' => 0,
-                'totalMaxTokens' => 0,
+                'fractionSum' => 0,
+                'fractionCount' => 0,
                 'activeAccountsCount' => 0,
                 'nextResetTime' => null
             ];
         }
 
         $fraction = (float)($mInfo['quotaInfo']['remainingFraction'] ?? 1.0);
-        $maxTokens = (int)($mInfo['maxTokens'] ?? 1048576);
 
         // Se for Opus, só adiciona tokens disponíveis se a conta realmente tiver cota confirmada
         if (stripos($mKey, 'opus') !== false) {
@@ -361,14 +366,12 @@ foreach ($accounts as $acc) {
             }
         }
 
-        $available = round($maxTokens * $fraction);
-        $consumed = max(0, $maxTokens - $available);
         $resetTime = $mInfo['quotaInfo']['resetTime'] ?? null;
-
-        $poolModelStats[$mKey]['totalAvailableTokens'] += $available;
-        $poolModelStats[$mKey]['totalConsumedTokens'] += $consumed;
-        $poolModelStats[$mKey]['totalMaxTokens'] += $maxTokens;
-        if ($fraction > 0.05) {
+        if (isset($mInfo['quotaInfo']['remainingFraction']) && is_numeric($mInfo['quotaInfo']['remainingFraction'])) {
+            $poolModelStats[$mKey]['fractionSum'] += max(0, min(1, (float)$fraction));
+            $poolModelStats[$mKey]['fractionCount']++;
+        }
+        if (isset($mInfo['quotaInfo']['remainingFraction']) && is_numeric($mInfo['quotaInfo']['remainingFraction']) && $fraction > 0.05) {
             $poolModelStats[$mKey]['activeAccountsCount']++;
         }
 
@@ -538,8 +541,7 @@ require_once __DIR__ . '/includes/header.php';
                     <span class="px-3 py-1.5 rounded-xl border border-pink-500/30 text-pink-300 font-bold flex items-center gap-2 shadow-sm" style="background: rgba(236,72,153,0.08);">
                         <i class="fa-solid fa-battery-half text-emerald-400 text-sm"></i>
                         <span>Cota Opus no Pool:</span>
-                        <strong class="text-[var(--text-heading)] text-sm"><?= number_format($opusPoolAvailableTokens, 0, ',', '.') ?></strong>
-                        <span class="text-pink-400/90 font-normal">/ <?= number_format($opusPoolMaxTokens, 0, ',', '.') ?> tokens livres (<?= $opusPoolPercentage ?>%)</span>
+                        <strong class="text-[var(--text-heading)] text-sm"><?= $opusActiveCount ?> contas com cota confirmada</strong>
                     </span>
                     <span class="px-2.5 py-1.5 rounded-xl border border-[var(--border-color)] text-emerald-400 flex items-center gap-1.5 text-[11px] font-semibold" style="background: var(--bg-surface);">
                         <i class="fa-solid fa-circle-check text-emerald-400"></i> <?= $opusActiveCount ?> com cota
@@ -555,7 +557,7 @@ require_once __DIR__ . '/includes/header.php';
                 </div>
 
                 <p class="text-xs text-[var(--text-muted)] leading-relaxed">
-                    O catálogo da Google API lista cota teórica para todas as contas. Nossa verificação unificada faz probe real via Cloud Code para assegurar que seus tokens de Opus estão prontos para produção.
+                    O catálogo da Google API lista cota teórica para todas as contas. Nossa verificação unificada faz probe real via Cloud Code para verificar a disponibilidade de Opus.
                 </p>
             </div>
         </div>
@@ -610,7 +612,7 @@ require_once __DIR__ . '/includes/header.php';
                     $pStat = $poolModelStats[$pKey] ?? null;
                     if (!$pStat) continue;
 
-                    $poolPct = $pStat['totalMaxTokens'] > 0 ? round(($pStat['totalAvailableTokens'] / $pStat['totalMaxTokens']) * 100) : 0;
+                    $poolPct = $pStat['fractionCount'] ? round(100 * $pStat['fractionSum'] / $pStat['fractionCount']) : null;
                     $poolBarCol = $poolPct > 50 ? 'bg-emerald-500' : ($poolPct > 20 ? 'bg-amber-500' : 'bg-red-500');
                     $poolTextCol = $poolPct > 50 ? 'text-emerald-400' : ($poolPct > 20 ? 'text-amber-400' : 'text-red-400');
 
@@ -639,40 +641,24 @@ require_once __DIR__ . '/includes/header.php';
                                 </div>
                             </div>
                             <div class="text-right">
-                                <span class="text-sm font-black font-mono <?= $poolTextCol ?>"><?= $poolPct ?>%</span>
-                                <div class="text-[9px] text-[var(--text-muted)] uppercase font-semibold">Pool Disponível</div>
+                                <span class="text-sm font-black font-mono <?= $poolTextCol ?>"><?= $poolPct === null ? "—" : $poolPct . "%" ?></span>
+                                <div class="text-[9px] text-[var(--text-muted)] uppercase font-semibold">Média das cotas informadas</div>
                             </div>
                         </div>
 
-                        <!-- Métricas Consolidadas do Pool -->
-                        <div class="grid grid-cols-2 gap-2 font-mono text-xs">
-                            <div class="px-2.5 py-2 rounded-xl border border-[var(--border-color)] flex flex-col" style="background: var(--bg-surface-elevated);">
-                                <span class="text-[var(--text-muted)] text-[9px] flex items-center gap-1">
-                                    <i class="fa-solid fa-battery-three-quarters text-emerald-400 text-[9px]"></i> Total Disponível
-                                </span>
-                                <span class="font-bold <?= $poolTextCol ?> text-xs truncate mt-0.5">
-                                    <?= number_format($pStat['totalAvailableTokens'], 0, ',', '.') ?> <span class="text-[9px] text-[var(--text-muted)]">tk</span>
-                                </span>
-                            </div>
-                            <div class="px-2.5 py-2 rounded-xl border border-[var(--border-color)] flex flex-col" style="background: var(--bg-surface-elevated);">
-                                <span class="text-[var(--text-muted)] text-[9px] flex items-center gap-1">
-                                    <i class="fa-solid fa-fire-flame-curved text-orange-400 text-[9px]"></i> Total Consumido
-                                </span>
-                                <span class="font-bold text-amber-300 text-xs truncate mt-0.5">
-                                    <?= number_format($pStat['totalConsumedTokens'], 0, ',', '.') ?> <span class="text-[9px] text-[var(--text-muted)]">tk</span>
-                                </span>
-                            </div>
+                        <div class="px-2.5 py-2 rounded-xl border border-[var(--border-color)] text-xs" style="background: var(--bg-surface-elevated);">
+                            <span class="text-[var(--text-muted)]">Uso estimado registrado pelo gateway neste modelo, desde a atualização:</span>
+                            <strong class="text-amber-300"><?= $actualUsageAvailable ? number_format($actualUsage[$pKey] ?? 0, 0, ',', '.') . ' tokens' : 'indisponível até a migração' ?></strong>
                         </div>
-
                         <!-- Barra de Progresso Consolidada do Pool -->
                         <div class="w-full h-2 rounded-full border border-[var(--border-color)] overflow-hidden" style="background: var(--bg-surface-elevated);">
-                            <div class="h-full <?= $poolBarCol ?> transition-all duration-700" style="width: <?= $poolPct ?>%;"></div>
+                            <div class="h-full <?= $poolBarCol ?> transition-all duration-700" style="width: <?= $poolPct ?? 0 ?>%;"></div>
                         </div>
 
                         <div class="flex items-center justify-between text-[10px] text-[var(--text-muted)] pt-0.5 font-mono">
                             <span class="flex items-center space-x-1" title="Capacidade máxima combinada de todas as contas para este modelo">
                                 <i class="fa-solid fa-layer-group text-[9px]"></i>
-                                <span>Capacidade: <?= number_format($pStat['totalMaxTokens'], 0, ',', '.') ?> tk</span>
+                                <span><?= $pStat['fractionCount'] ?> contas com cota informada</span>
                             </span>
                             <span class="flex items-center gap-1.5">
                                 <span class="text-[9px] text-cyan-400" title="Horário de renovação de cota do Google"><i class="fa-solid fa-clock-rotate-left mr-0.5"></i> <?= $pResetLabel ?></span>
@@ -692,17 +678,17 @@ require_once __DIR__ . '/includes/header.php';
                 </summary>
                 <div class="mt-3 grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-2.5 p-3 rounded-2xl border border-[var(--border-color)]" style="background: var(--bg-surface);">
                     <?php foreach ($poolModelStats as $allPKey => $allPStat): 
-                        $allPct = $allPStat['totalMaxTokens'] > 0 ? round(($allPStat['totalAvailableTokens'] / $allPStat['totalMaxTokens']) * 100) : 0;
+                        $allPct = $allPStat['fractionCount'] ? round(100 * $allPStat['fractionSum'] / $allPStat['fractionCount']) : null;
                         $allCol = $allPct > 50 ? 'text-emerald-400' : ($allPct > 20 ? 'text-amber-400' : 'text-red-400');
                     ?>
                         <div class="p-2.5 rounded-xl border border-[var(--border-color)] text-xs flex items-center justify-between" style="background: var(--bg-surface-elevated);">
                             <div class="truncate mr-2">
                                 <div class="font-medium text-[var(--text-heading)] truncate text-[11px]"><?= htmlspecialchars($allPStat['displayName']) ?></div>
                                 <div class="text-[9px] text-[var(--text-muted)] font-mono truncate">
-                                    Disp: <?= number_format($allPStat['totalAvailableTokens'], 0, ',', '.') ?> / <?= number_format($allPStat['totalMaxTokens'], 0, ',', '.') ?> tk
+                                    Cota média informada pelas contas
                                 </div>
                             </div>
-                            <span class="font-bold font-mono text-[11px] <?= $allCol ?> whitespace-nowrap"><?= $allPct ?>%</span>
+                            <span class="font-bold font-mono text-[11px] <?= $allCol ?> whitespace-nowrap"><?= $allPct === null ? "—" : $allPct . "%" ?></span>
                         </div>
                     <?php endforeach; ?>
                 </div>
@@ -919,7 +905,7 @@ require_once __DIR__ . '/includes/header.php';
                                     $providerRaw = $mQuota['modelProvider'] ?? $mQuota['apiProvider'] ?? 'Google';
                                     $provider = stripos($providerRaw, 'anthropic') !== false ? 'Anthropic' : (stripos($providerRaw, 'openai') !== false ? 'OpenAI' : 'Google');
                                     
-                                    $fraction = $mQuota['quotaInfo']['remainingFraction'] ?? 1.0;
+                                    $fraction = isset($mQuota['quotaInfo']['remainingFraction']) && is_numeric($mQuota['quotaInfo']['remainingFraction']) ? max(0, min(1, (float)$mQuota['quotaInfo']['remainingFraction'])) : null;
                                     $resetTime = $mQuota['quotaInfo']['resetTime'] ?? null;
                                     $maxTokens = $mQuota['maxTokens'] ?? 1048576;
 
@@ -939,14 +925,12 @@ require_once __DIR__ . '/includes/header.php';
                                         } else {
                                             $barCol = 'bg-pink-500';
                                             $textCol = 'text-pink-400';
-                                            $opusNote = '<span class="px-2 py-0.5 rounded bg-pink-500/20 text-pink-300 font-bold text-[9px]"><i class="fa-solid fa-gem mr-1"></i>' . number_format($availableTokens, 0, ',', '.') . ' TOKENS ATIVOS</span>';
+                                            $opusNote = '<span class="px-2 py-0.5 rounded bg-pink-500/20 text-pink-300 font-bold text-[9px]"><i class="fa-solid fa-gem mr-1"></i>COTA CONFIRMADA</span>';
                                         }
                                     } else {
-                                        $percentage = round($fraction * 100);
+                                        $percentage = $fraction === null ? null : round($fraction * 100);
                                         $barCol = $percentage > 50 ? 'bg-emerald-500' : ($percentage > 20 ? 'bg-amber-500' : 'bg-red-500');
                                         $textCol = $percentage > 50 ? 'text-emerald-400' : ($percentage > 20 ? 'text-amber-400' : 'text-red-400');
-                                        $availableTokens = round($maxTokens * $fraction);
-                                        $consumedTokens = max(0, $maxTokens - $availableTokens);
                                     }
 
                                     // Cálculo de tempo até o reset
@@ -976,7 +960,7 @@ require_once __DIR__ . '/includes/header.php';
                                                 <div class="text-[10px] text-gray-400 font-mono mt-0.5"><?= htmlspecialchars($mKey) ?></div>
                                             </div>
                                             <div class="text-right">
-                                                <span class="text-sm font-black font-mono <?= $textCol ?>"><?= $percentage ?>%</span>
+                                                <span class="text-sm font-black font-mono <?= $textCol ?>"><?= $percentage === null ? '—' : $percentage . '%' ?></span>
                                                 <div class="text-[9px] text-gray-500 uppercase font-semibold">Cota Restante</div>
                                             </div>
                                         </div>
@@ -985,39 +969,14 @@ require_once __DIR__ . '/includes/header.php';
                                             <div class="pt-0.5"><?= $opusNote ?></div>
                                         <?php endif; ?>
 
-                                        <?php
-                                            $spentTokens = $modelUsageStats[$mKey]['tokens'] ?? 0;
-                                            if ($spentTokens === 0) {
-                                                foreach ($modelUsageStats as $usedMod => $uData) {
-                                                    if (stripos($usedMod, str_replace(['gemini-', '-medium', '-thinking', '-low'], '', $mKey)) !== false) {
-                                                        $spentTokens += $uData['tokens'];
-                                                    }
-                                                }
-                                            }
-                                        ?>
-                                        <!-- Destaque de Tokens Disponíveis e Consumidos no Ciclo do Google -->
-                                        <div class="grid grid-cols-2 gap-1.5 font-mono text-xs">
-                                            <div class="bg-gray-950/70 px-2 py-1.5 rounded-xl border border-gray-800/80 flex flex-col">
-                                                <span class="text-gray-500 text-[9px] flex items-center gap-1">
-                                                    <i class="fa-solid fa-battery-half text-emerald-400 text-[8px]"></i> Disponível
-                                                </span>
-                                                <span class="font-bold <?= $textCol ?> text-[11px] truncate">
-                                                    <?= number_format($availableTokens, 0, ',', '.') ?> <span class="text-[9px] text-gray-500">tk</span>
-                                                </span>
-                                            </div>
-                                            <div class="bg-gray-950/70 px-2 py-1.5 rounded-xl border border-gray-800/80 flex flex-col" title="<?= $spentTokens > 0 ? 'Consumo total da cota Google. Gateway registrou ' . number_format($spentTokens, 0, ',', '.') . ' tk' : 'Consumo total do pool da conta Google' ?>">
-                                                <span class="text-gray-500 text-[9px] flex items-center gap-1">
-                                                    <i class="fa-solid fa-fire text-orange-400 text-[8px]"></i> Consumido
-                                                </span>
-                                                <span class="font-bold text-amber-300 text-[11px] truncate">
-                                                    <?= number_format($consumedTokens, 0, ',', '.') ?> <span class="text-[9px] text-gray-500">tk</span>
-                                                </span>
-                                            </div>
+                                        <div class="bg-gray-950/70 px-2 py-1.5 rounded-xl border border-gray-800/80 text-xs" title="Estimativa do gateway para esta conta e modelo efetivamente atendido. Não é a cota em tokens do Google.">
+                                            <span class="text-gray-400">Uso estimado registrado desde a atualização:</span>
+                                            <span class="font-bold text-amber-300"><?= $actualUsageAvailable ? number_format($accountUsage[(int)$acc['id']][$mKey] ?? 0, 0, ',', '.') . ' tokens' : 'indisponível até a migração' ?></span>
                                         </div>
 
                                         <!-- Barra de Progresso Visual -->
                                         <div class="w-full h-2 rounded-full bg-gray-950 border border-gray-800/80 overflow-hidden">
-                                            <div class="h-full <?= $barCol ?> transition-all duration-700" style="width: <?= $percentage ?>%;"></div>
+                                            <div class="h-full <?= $barCol ?> transition-all duration-700" style="width: <?= $percentage ?? 0 ?>%;"></div>
                                         </div>
 
                                         <div class="flex items-center justify-between text-[10px] text-gray-400 pt-0.5">
@@ -1043,11 +1002,11 @@ require_once __DIR__ . '/includes/header.php';
                                         // Pular modelos antigos abaixo de 3.8
                                         if (preg_match('/(2\.5|3\.5|3\.6|3\.7)/i', $modKey)) continue;
 
-                                        $f = $modDetails['quotaInfo']['remainingFraction'] ?? 1.0;
+                                        $f = isset($modDetails['quotaInfo']['remainingFraction']) && is_numeric($modDetails['quotaInfo']['remainingFraction']) ? max(0, min(1, (float)$modDetails['quotaInfo']['remainingFraction'])) : null;
                                         if (stripos($modKey, 'opus') !== false && !$accOpus['has_quota']) {
                                             $f = 0.0;
                                         }
-                                        $p = round($f * 100);
+                                        $p = $f === null ? null : round($f * 100);
                                         $col = $p > 50 ? 'text-emerald-400' : ($p > 20 ? 'text-amber-400' : 'text-red-400');
                                     ?>
                                         <div class="p-2.5 rounded-xl bg-gray-900/50 border border-gray-800/60 text-xs flex items-center justify-between">
@@ -1055,7 +1014,7 @@ require_once __DIR__ . '/includes/header.php';
                                                 <div class="font-medium text-white truncate text-[11px]"><?= htmlspecialchars($modDetails['displayName'] ?? $modKey) ?></div>
                                                 <div class="text-[9px] text-gray-500 font-mono truncate"><?= htmlspecialchars($modKey) ?></div>
                                             </div>
-                                            <span class="font-bold font-mono text-[11px] <?= $col ?> whitespace-nowrap"><?= $p ?>%</span>
+                                            <span class="font-bold font-mono text-[11px] <?= $col ?> whitespace-nowrap"><?= $p === null ? '—' : $p . '%' ?></span>
                                         </div>
                                     <?php endforeach; ?>
                                 </div>

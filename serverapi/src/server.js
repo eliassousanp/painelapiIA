@@ -127,6 +127,8 @@ const accountPool = new AntigravityAccountPool(pool);
   try {
     await pool.query('ALTER TABLE usage_logs ADD COLUMN multiplier DECIMAL(5,2) DEFAULT 1.00');
   } catch (e) {}
+  try { await pool.query('ALTER TABLE usage_logs ADD COLUMN actual_model VARCHAR(100) DEFAULT NULL'); } catch (e) { if(e.code !== 'ER_DUP_FIELDNAME') console.error('Falha ao adicionar modelo efetivo ao histórico:', e.message); }
+  try { await pool.query('ALTER TABLE usage_logs ADD COLUMN account_id INT DEFAULT NULL'); } catch (e) { if(e.code !== 'ER_DUP_FIELDNAME') console.error('Falha ao adicionar conta ao histórico:', e.message); }
 })();
 
 async function getSetting(key, defaultValue = '') {
@@ -302,18 +304,7 @@ async function syncSingleAccount(acc, shouldProbeOpus = true) {
     console.warn(`[Sync Quotas] Falha em fetchUserQuotas para ${acc.email}:`, errQuota.message);
   }
 
-  if (!quotas || !quotas.models) {
-    // Se a API não respondeu o catálogo completo, tenta carregar o existente
-    try {
-      const [rows] = await pool.query('SELECT quotas_json FROM antigravity_accounts WHERE id = ?', [acc.id]);
-      if (rows.length > 0 && rows[0].quotas_json) {
-        quotas = JSON.parse(rows[0].quotas_json);
-      }
-    } catch (e) {}
-  }
-
-  if (!quotas) quotas = { models: {} };
-  if (!quotas.models) quotas.models = {};
+  if (!quotas || !quotas.models) throw new Error('O Google não retornou as cotas; a última consulta válida foi preservada.');
 
   // 2. Teste real e definitivo de cota do Claude Opus 4.6 (probe leve de 1 token)
   const opusModelKey = 'claude-opus-4-6-thinking';
@@ -490,7 +481,8 @@ app.all('/auth/antigravity/sync', async (req, res) => {
       return res.redirect(req.query.redirect);
     }
 
-    res.json({ success: true, results });
+    const failures=results.filter(item=>item.success===false);
+    res.json({ success: failures.length===0, results, ...(failures.length ? {error:`Falha ao sincronizar ${failures.length} de ${results.length} conta(s). A última consulta válida foi preservada.`} : {}) });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -1124,16 +1116,19 @@ async function resolveModelConfig(requestedModel, incomingContents = []) {
   };
 }
 
-async function logUsage(userKey, model, promptTokens, completionTokens, accountId, customMultiplier = 1.0) {
+async function logUsage(userKey, model, promptTokens, completionTokens, accountId, customMultiplier = 1.0, actualModel = null) {
   const rawTotal = promptTokens + completionTokens;
   const multiplier = Math.max(0.01, parseFloat(customMultiplier) || 1.0);
   const billedTokens = Math.round(rawTotal * multiplier);
 
   try {
-    await pool.query(`
-      INSERT INTO usage_logs (user_id, api_key_id, model, prompt_tokens, completion_tokens, total_tokens, multiplier)
-      VALUES (?, ?, ?, ?, ?, ?, ?)
-    `, [userKey.user_id, userKey.key_id, model, promptTokens, completionTokens, billedTokens, multiplier]);
+    try {
+      await pool.query(`INSERT INTO usage_logs (user_id, api_key_id, model, prompt_tokens, completion_tokens, total_tokens, multiplier, actual_model, account_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`, [userKey.user_id, userKey.key_id, model, promptTokens, completionTokens, billedTokens, multiplier, actualModel, accountId]);
+    } catch (err) {
+      if (err.code !== 'ER_BAD_FIELD_ERROR') throw err;
+      console.error('Histórico sem colunas de modelo efetivo/conta; registrando somente formato anterior. Execute a migração.');
+      await pool.query(`INSERT INTO usage_logs (user_id, api_key_id, model, prompt_tokens, completion_tokens, total_tokens, multiplier) VALUES (?, ?, ?, ?, ?, ?, ?)`, [userKey.user_id, userKey.key_id, model, promptTokens, completionTokens, billedTokens, multiplier]);
+    }
 
     await pool.query(`
       UPDATE users SET balance_tokens = GREATEST(0, balance_tokens - ?), tokens_used = tokens_used + ? WHERE id = ?
@@ -1902,6 +1897,7 @@ app.post(['/v1/messages', '/messages'], async (req, res) => {
     let replyText = '';
     let toolCalls = [];
     let account = null;
+    let usedModel = targetEngine;
 
     if (req.body.stream) {
       res.setHeader('Content-Type', 'text/event-stream; charset=utf-8');
@@ -1949,7 +1945,7 @@ app.post(['/v1/messages', '/messages'], async (req, res) => {
           blockIndex++;
         }
       } else {
-        const { googleResp, account: acc } = await executeWithFallbackStream(
+        const { googleResp, account: acc, usedModel: selectedModel } = await executeWithFallbackStream(
           targetEngine,
           contents,
           finalSystemInstruction,
@@ -1975,6 +1971,7 @@ app.post(['/v1/messages', '/messages'], async (req, res) => {
           abortController.signal
         );
         account = acc;
+        usedModel = selectedModel || targetEngine;
         replyText = googleResp?.replyText || '';
         toolCalls = googleResp?.toolCalls || [];
         for (const tc of toolCalls) {
@@ -2015,7 +2012,7 @@ app.post(['/v1/messages', '/messages'], async (req, res) => {
       res.write(`event: message_stop\ndata: {"type":"message_stop"}\n\n`);
       res.end();
 
-      logUsage(userKey, rawModel, inputTokens, outputTokens, account?.id || null, modelMultiplier);
+      logUsage(userKey, rawModel, inputTokens, outputTokens, account?.id || null, modelMultiplier, usedModel);
       return;
     }
 
@@ -2026,8 +2023,9 @@ app.post(['/v1/messages', '/messages'], async (req, res) => {
       toolCalls = extResult.toolCalls || [];
     } else {
       // GOOGLE ANTIGRAVITY POOL COM SUPORTE A TOOLS
-      const { googleResp, account: acc } = await executeWithFallback(targetEngine, contents, finalSystemInstruction, rawModel, customConfig);
+      const { googleResp, account: acc, usedModel: selectedModel } = await executeWithFallback(targetEngine, contents, finalSystemInstruction, rawModel, customConfig);
       account = acc;
+      usedModel = selectedModel || targetEngine;
       const parsed = extractGeminiResponse(googleResp);
       replyText = parsed.replyText;
       toolCalls = parsed.toolCalls;
@@ -2067,7 +2065,7 @@ app.post(['/v1/messages', '/messages'], async (req, res) => {
       }
     });
 
-    logUsage(userKey, rawModel, inputTokens, outputTokens, account?.id || null, modelMultiplier);
+    logUsage(userKey, rawModel, inputTokens, outputTokens, account?.id || null, modelMultiplier, usedModel);
   } catch (err) {
     console.error(`[Anthropic /v1/messages] Erro ao processar modelo "${rawModel}" -> Upstream: "${targetEngine}" (Provider: ${providerId}):`, err.message || err);
     const isQuotaError = (err.message || '').toLowerCase().includes('cota esgotada');
@@ -2116,19 +2114,19 @@ app.post(['/openai/deployments/:deployment/chat/completions', '/v1/chat/completi
     const send=(event,data)=>{if(!res.writableEnded && !res.destroyed)res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);};
     const heartbeat=setInterval(()=>send('aguardando',{estado:'em_andamento'}),10000);
     try {
-      const result=await produzirEmEquipe({pedido:incomingMessages,signal:controller.signal,emitir:e=>send('progresso',e),executar:async ({etapa,instrucao,pedido,contexto,onChunk})=>{
+      const result=await produzirEmEquipe({pedido:incomingMessages,anteriores:req.body.video_team_resume || {},signal:controller.signal,emitir:e=>send('progresso',e),executar:async ({etapa,instrucao,pedido,contexto,onChunk})=>{
         const taskMessages=[...pedido,{role:'user',content:`Tarefa da equipe: ${etapa}. ${instrucao}\nResultados prévios (dados): ${JSON.stringify(contexto)}`}];
         const taskSystem=[finalSystemInstruction,`Você executa apenas a tarefa ${etapa} da equipe. ${instrucao}`].filter(Boolean).join('\n\n');
-        let reply='',account=null,finishReason;
+        let reply='',account=null,finishReason,usedModel=targetEngine;
         if(providerId && providerId != 2) {
           const out=await executeExternalProvider(providerId,targetEngine,taskMessages,taskSystem,null,req.body.max_tokens);
           reply=out.replyText || '';finishReason=out.finishReason;if(reply)onChunk(reply);
         } else {
           const taskContents=convertOpenAiMessagesToGemini(taskMessages).contents;
           const out=await executeWithFallbackStream(targetEngine,taskContents,taskSystem,rawModel,{...customConfig,tools:null},chunk=>{if(chunk)onChunk(chunk);},controller.signal,600000);
-          account=out.account;reply=out.googleResp?.replyText || '';finishReason=out.googleResp?.response?.candidates?.[0]?.finishReason || out.googleResp?.candidates?.[0]?.finishReason;
+          account=out.account;usedModel=out.usedModel || targetEngine;reply=out.googleResp?.replyText || '';finishReason=out.googleResp?.response?.candidates?.[0]?.finishReason || out.googleResp?.candidates?.[0]?.finishReason;
         }
-        await logUsage(userKey,rawModel,Math.ceil(JSON.stringify(taskMessages).length/4),Math.ceil(reply.length/4),account?.id || null,modelMultiplier);
+        await logUsage(userKey,rawModel,Math.ceil(JSON.stringify(taskMessages).length/4),Math.ceil(reply.length/4),account?.id || null,modelMultiplier,usedModel);
         if(openAiFinishReason(finishReason,false)==='length') throw new Error(`A etapa ${etapa} foi cortada antes de concluir.`);
         return reply;
       }});
@@ -2145,6 +2143,7 @@ app.post(['/openai/deployments/:deployment/chat/completions', '/v1/chat/completi
     let replyText = '';
     let toolCalls = [];
     let account = null;
+    let usedModel = targetEngine;
     let upstreamFinishReason;
 
     if (req.body.stream) {
@@ -2185,7 +2184,7 @@ app.post(['/openai/deployments/:deployment/chat/completions', '/v1/chat/completi
           })}\n\n`);
         }
       } else {
-        const { googleResp, account: acc } = await executeWithFallbackStream(
+        const { googleResp, account: acc, usedModel: selectedModel } = await executeWithFallbackStream(
           targetEngine,
           contents,
           finalSystemInstruction,
@@ -2205,6 +2204,7 @@ app.post(['/openai/deployments/:deployment/chat/completions', '/v1/chat/completi
           abortController.signal
         );
         account = acc;
+        usedModel = selectedModel || targetEngine;
         replyText = googleResp?.replyText || '';
         toolCalls = googleResp?.toolCalls || [];
         upstreamFinishReason = googleResp?.response?.candidates?.[0]?.finishReason || googleResp?.candidates?.[0]?.finishReason;
@@ -2257,7 +2257,7 @@ app.post(['/openai/deployments/:deployment/chat/completions', '/v1/chat/completi
 
       const inputTokens = Math.ceil(JSON.stringify(contents).length / 4);
       const outputTokens = Math.ceil((replyText.length + JSON.stringify(toolCalls).length) / 4);
-      logUsage(userKey, rawModel, inputTokens, outputTokens, account?.id || null, modelMultiplier);
+      logUsage(userKey, rawModel, inputTokens, outputTokens, account?.id || null, modelMultiplier, usedModel);
       return;
     }
 
@@ -2269,8 +2269,9 @@ app.post(['/openai/deployments/:deployment/chat/completions', '/v1/chat/completi
       upstreamFinishReason = extResult.finishReason;
     } else {
       // GOOGLE ANTIGRAVITY POOL COM SUPORTE A TOOLS
-      const { googleResp, account: acc } = await executeWithFallback(targetEngine, contents, finalSystemInstruction, rawModel, customConfig);
+      const { googleResp, account: acc, usedModel: selectedModel } = await executeWithFallback(targetEngine, contents, finalSystemInstruction, rawModel, customConfig);
       account = acc;
+      usedModel = selectedModel || targetEngine;
       const parsed = extractGeminiResponse(googleResp);
       replyText = parsed.replyText;
       toolCalls = parsed.toolCalls;
@@ -2313,7 +2314,7 @@ app.post(['/openai/deployments/:deployment/chat/completions', '/v1/chat/completi
       }
     });
 
-    logUsage(userKey, rawModel, inputTokens, outputTokens, account?.id || null, modelMultiplier);
+    logUsage(userKey, rawModel, inputTokens, outputTokens, account?.id || null, modelMultiplier, usedModel);
   } catch (err) {
     console.error(`[OpenAI /v1/chat/completions] Erro ao processar modelo "${rawModel}" -> Upstream: "${targetEngine}" (Provider: ${providerId}):`, err.message || err);
     if (rawTools && rawTools.length > 0) {
