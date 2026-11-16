@@ -817,7 +817,11 @@ async function executeExternalProvider(providerId, targetEngine, incomingMessage
     }
   }
 
-  if(!replyText && !extToolCalls.length) {const error=new Error(`[${provider.name}] Resposta vazia do modelo.`);error.status=503;throw error;}
+  if(!replyText && !extToolCalls.length) {
+    const reason=String(json.choices?.[0]?.finish_reason || 'não informado').slice(0,80);
+    const reasoning=typeof replyMessage.reasoning_content==='string' && replyMessage.reasoning_content.length>0;
+    const error=new Error(`[${provider.name}] Resposta vazia do modelo (término: ${reason}; raciocínio sem resposta final: ${reasoning ? 'sim' : 'não'}).`);error.status=503;throw error;
+  }
   return { replyText, toolCalls: extToolCalls, provider, account: null, finishReason: json.choices?.[0]?.finish_reason };
   };
   let last;

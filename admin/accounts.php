@@ -979,6 +979,11 @@ require_once __DIR__ . '/includes/header.php';
                                         <?php endif; ?>
                                         <?php if ($quotaSource === 'retrieveUserQuota'): ?>
                                             <div class="text-[10px] text-cyan-300">Consulta Google<?= $quotaType ? ' · ' . htmlspecialchars($quotaType, ENT_QUOTES, 'UTF-8') : '' ?><?= $quotaChecked ? ' · ' . htmlspecialchars($quotaChecked, ENT_QUOTES, 'UTF-8') : '' ?></div>
+                                            <?php foreach (($mQuota['quotaInfo']['buckets'] ?? []) as $quotaBucket): ?>
+                                                <?php if (isset($quotaBucket['remainingAmount']) && preg_match('/^\d+$/', (string)$quotaBucket['remainingAmount'])): ?>
+                                                    <div class="text-[10px] text-gray-300">Quantidade restante informada: <?= htmlspecialchars((string)$quotaBucket['remainingAmount'], ENT_QUOTES, 'UTF-8') ?> <?= htmlspecialchars((string)($quotaBucket['tokenType'] ?? 'unidade não informada'), ENT_QUOTES, 'UTF-8') ?></div>
+                                                <?php endif; ?>
+                                            <?php endforeach; ?>
                                         <?php endif; ?>
 
                                         <div class="bg-gray-950/70 px-2 py-1.5 rounded-xl border border-gray-800/80 text-xs" title="Estimativa do gateway para esta conta e modelo efetivamente atendido. Não é a cota em tokens do Google.">
