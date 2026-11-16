@@ -260,6 +260,7 @@ require_once __DIR__ . '/includes/header.php';
                         <i class="fa-solid fa-pen-to-square mr-1"></i> Editar
                     </button>
                     <form method="POST" action="providers.php" class="inline" onsubmit="this.querySelector('button').innerHTML='<i class=\'fa-solid fa-spinner fa-spin mr-1\'></i> Buscando...';">
+                        <?= csrf_field() ?>
                         <input type="hidden" name="action" value="sync_provider_models">
                         <input type="hidden" name="provider_id" value="<?= $p['id'] ?>">
                         <button type="submit" class="text-xs text-purple-400 hover:text-purple-300 font-semibold flex items-center" title="Listar e importar modelos da API deste provedor">
@@ -267,6 +268,7 @@ require_once __DIR__ . '/includes/header.php';
                         </button>
                     </form>
                     <form method="POST" action="providers.php" onsubmit="return confirm('Excluir este provedor e suas chaves?');" class="inline">
+            <?= csrf_field() ?>
                         <input type="hidden" name="action" value="delete_provider">
                         <input type="hidden" name="provider_id" value="<?= $p['id'] ?>">
                         <button type="submit" class="text-xs text-red-400 hover:text-red-300">Excluir</button>
@@ -322,6 +324,7 @@ require_once __DIR__ . '/includes/header.php';
                                             <?= $pk['error_count'] ?> erros
                                         </span>
                                         <form method="POST" action="providers.php" class="inline ml-2">
+            <?= csrf_field() ?>
                                             <input type="hidden" name="action" value="reset_key_errors">
                                             <input type="hidden" name="key_id" value="<?= $pk['id'] ?>">
                                             <button type="submit" class="text-[10px] text-gray-400 hover:text-white underline">Resetar</button>
@@ -335,6 +338,7 @@ require_once __DIR__ . '/includes/header.php';
                                 </td>
                                 <td class="py-3.5 px-4 font-sans">
                                     <form method="POST" action="providers.php" onsubmit="return confirm('Excluir esta chave do provedor?');" class="inline">
+            <?= csrf_field() ?>
                                         <input type="hidden" name="action" value="delete_provider_key">
                                         <input type="hidden" name="key_id" value="<?= $pk['id'] ?>">
                                         <button type="submit" class="text-xs text-red-400 hover:text-red-300">Excluir</button>
@@ -361,6 +365,7 @@ require_once __DIR__ . '/includes/header.php';
         </div>
 
         <form method="POST" action="providers.php" class="space-y-4 text-xs">
+            <?= csrf_field() ?>
             <input type="hidden" name="action" value="save_provider">
             <input type="hidden" name="provider_id" id="provider_id" value="0">
 
@@ -401,6 +406,7 @@ require_once __DIR__ . '/includes/header.php';
         </div>
 
         <form method="POST" action="providers.php" class="space-y-4 text-xs">
+            <?= csrf_field() ?>
             <input type="hidden" name="action" value="save_provider_key">
             <input type="hidden" name="key_id" value="0">
 
