@@ -1021,7 +1021,7 @@ export function normalizeAntigravityModel(model) {
 }
 
 async function resolveModelConfig(requestedModel, incomingContents = []) {
-  const cleanModel = (requestedModel || '').replace(/[^\w\.\-]/g, '');
+  const cleanModel = (requestedModel || '').replace(/[^\w.\/-]/g, '');
   const now = Date.now();
 
   let row = null;
@@ -1622,6 +1622,7 @@ function normalizeMessagesForOpenAI(incomingMessages) {
 
     if (Array.isArray(m.content)) {
       let textContent = '';
+      const imageContent = [];
       const toolCalls = [];
       const toolResults = [];
 
@@ -1629,6 +1630,8 @@ function normalizeMessagesForOpenAI(incomingMessages) {
         if (!b) continue;
         if (b.type === 'text') {
           textContent += (b.text || '') + '\n';
+        } else if (b.type === 'image_url' && b.image_url) {
+          imageContent.push(b);
         } else if (b.type === 'tool_use') {
           toolCalls.push({
             id: b.id || ('call_' + crypto.randomBytes(8).toString('hex')),
@@ -1666,7 +1669,7 @@ function normalizeMessagesForOpenAI(incomingMessages) {
         const role = m.role === 'assistant' ? 'assistant' : 'user';
         const msgObj = {
           role,
-          content: textContent.trim() || (toolCalls.length > 0 ? null : ' ')
+          content: imageContent.length ? [...(textContent.trim() ? [{ type: 'text', text: textContent.trim() }] : []), ...imageContent] : (textContent.trim() || (toolCalls.length > 0 ? null : ' '))
         };
         if (toolCalls.length > 0) {
           msgObj.tool_calls = toolCalls;
