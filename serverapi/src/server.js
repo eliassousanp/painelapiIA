@@ -680,8 +680,8 @@ async function executeWithFallback(targetEngine, contents, systemInstruction, ra
 /**
  * Executa requisição com fallback usando streaming direto do Google CloudCode (SSE) com controle de RPM
  */
-async function executeWithFallbackStream(targetEngine, contents, systemInstruction, requestedModel, customConfig, onChunk, abortSignal) {
-  return await accountPool.executeWithFallbackStream(targetEngine, contents, systemInstruction, requestedModel, customConfig, onChunk, abortSignal);
+async function executeWithFallbackStream(targetEngine, contents, systemInstruction, requestedModel, customConfig, onChunk, abortSignal, accountWaitMs) {
+  return await accountPool.executeWithFallbackStream(targetEngine, contents, systemInstruction, requestedModel, customConfig, onChunk, abortSignal, accountWaitMs);
 }
 
 
@@ -2125,7 +2125,7 @@ app.post(['/openai/deployments/:deployment/chat/completions', '/v1/chat/completi
           reply=out.replyText || '';finishReason=out.finishReason;if(reply)onChunk(reply);
         } else {
           const taskContents=convertOpenAiMessagesToGemini(taskMessages).contents;
-          const out=await executeWithFallbackStream(targetEngine,taskContents,taskSystem,rawModel,{...customConfig,tools:null},chunk=>{if(chunk)onChunk(chunk);},controller.signal);
+          const out=await executeWithFallbackStream(targetEngine,taskContents,taskSystem,rawModel,{...customConfig,tools:null},chunk=>{if(chunk)onChunk(chunk);},controller.signal,600000);
           account=out.account;reply=out.googleResp?.replyText || '';finishReason=out.googleResp?.response?.candidates?.[0]?.finishReason || out.googleResp?.candidates?.[0]?.finishReason;
         }
         await logUsage(userKey,rawModel,Math.ceil(JSON.stringify(taskMessages).length/4),Math.ceil(reply.length/4),account?.id || null,modelMultiplier);

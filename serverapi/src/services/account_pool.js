@@ -193,11 +193,12 @@ class AntigravityAccountPool {
    * Tenta adquirir um slot de execução respeitando RPM e concorrência máxima
    * Se todas as contas estiverem cheias no mesmo milissegundo, aguarda em micro-fila
    */
-  async acquireAccount(modelKey, maxWaitMs = 6000) {
+  async acquireAccount(modelKey, maxWaitMs = 6000, abortSignal) {
     const startTime = Date.now();
     const limits = this.getModelLimits(modelKey);
 
     while (Date.now() - startTime < maxWaitMs) {
+      if (abortSignal?.aborted) throw new Error('Espera por conta cancelada.');
       const accounts = await this.getAllActiveAccounts();
       const ranked = this.rankAccounts(accounts, modelKey);
 
@@ -223,6 +224,7 @@ class AntigravityAccountPool {
           stat.lastUsedAt = new Date();
           try {
             const tokenOk = await this.ensureTokenFresh(account);
+            if (abortSignal?.aborted) throw new Error('Espera por conta cancelada.');
             if (tokenOk) return account;
           } catch (error) {
             this.releaseAccount(account.id);
@@ -418,7 +420,7 @@ class AntigravityAccountPool {
   /**
    * Executa chamada via Streaming com Fallback inteligente
    */
-  async executeWithFallbackStream(targetEngine, contents, systemInstruction, requestedModel, customConfig, onChunk, abortSignal) {
+  async executeWithFallbackStream(targetEngine, contents, systemInstruction, requestedModel, customConfig, onChunk, abortSignal, accountWaitMs = 4000) {
     if (targetEngine.includes('3.6') || targetEngine.includes('3.7')) {
       targetEngine = 'gemini-3.8-flash-medium';
     }
@@ -429,7 +431,7 @@ class AntigravityAccountPool {
     for (let attempt = 0; attempt < accounts.length; attempt++) {
       let account = null;
       try {
-        account = await this.acquireAccount(targetEngine, 4000);
+        account = await this.acquireAccount(targetEngine, accountWaitMs, abortSignal);
         const streamRes = await streamGenerateContent(
           account.access_token,
           account.project_id || 'aicode-consumers',
@@ -454,7 +456,7 @@ class AntigravityAccountPool {
         // Se o modelo retornou 404 NOT FOUND no Google Cloud Code durante streaming, faz fallback seguro para gemini-3.8-flash-medium
         if ((status === 404 || msg.includes('not found')) && targetEngine !== 'gemini-3.8-flash-medium') {
           console.warn(`[Pool Stream Fallback] Modelo "${targetEngine}" retornou 404 NOT FOUND no Google. Redirecionando streaming com segurança para "gemini-3.8-flash-medium"...`);
-          return await this.executeWithFallbackStream('gemini-3.8-flash-medium', contents, systemInstruction, requestedModel, customConfig, onChunk, abortSignal);
+          return await this.executeWithFallbackStream('gemini-3.8-flash-medium', contents, systemInstruction, requestedModel, customConfig, onChunk, abortSignal, accountWaitMs);
         }
 
         const isTOSor403 = status === 403 || msg.includes('terms of service') || msg.includes('tos_violation') || msg.includes('permission_denied');
@@ -473,17 +475,17 @@ class AntigravityAccountPool {
     if (targetEngine.includes('opus')) {
       try {
         console.warn(`[Model Stream Auto-Fallback] Cota de "${targetEngine}" esgotada no streaming. Tentando "claude-sonnet-4-6"...`);
-        return await this.executeWithFallbackStream('claude-sonnet-4-6', contents, systemInstruction, requestedModel, customConfig, onChunk, abortSignal);
+        return await this.executeWithFallbackStream('claude-sonnet-4-6', contents, systemInstruction, requestedModel, customConfig, onChunk, abortSignal, accountWaitMs);
       } catch (e1) {
         console.warn(`[Model Stream Auto-Fallback] Claude Sonnet indisponível (${e1.message}). Redirecionando streaming para "gemini-3.8-flash-medium"...`);
-        return await this.executeWithFallbackStream('gemini-3.8-flash-medium', contents, systemInstruction, requestedModel, customConfig, onChunk, abortSignal);
+        return await this.executeWithFallbackStream('gemini-3.8-flash-medium', contents, systemInstruction, requestedModel, customConfig, onChunk, abortSignal, accountWaitMs);
       }
     } else if (targetEngine.includes('sonnet') || targetEngine.includes('claude')) {
       console.warn(`[Model Stream Auto-Fallback] Cota de "${targetEngine}" esgotada no streaming. Redirecionando para "gemini-3.8-flash-medium"...`);
-      return await this.executeWithFallbackStream('gemini-3.8-flash-medium', contents, systemInstruction, requestedModel, customConfig, onChunk, abortSignal);
+      return await this.executeWithFallbackStream('gemini-3.8-flash-medium', contents, systemInstruction, requestedModel, customConfig, onChunk, abortSignal, accountWaitMs);
     } else if (targetEngine !== 'gemini-3.8-flash-medium') {
       console.warn(`[Model Stream Auto-Fallback] Cota de "${targetEngine}" esgotada no streaming. Redirecionando para "gemini-3.8-flash-medium"...`);
-      return await this.executeWithFallbackStream('gemini-3.8-flash-medium', contents, systemInstruction, requestedModel, customConfig, onChunk, abortSignal);
+      return await this.executeWithFallbackStream('gemini-3.8-flash-medium', contents, systemInstruction, requestedModel, customConfig, onChunk, abortSignal, accountWaitMs);
     }
 
     throw lastError || new Error('Todas as contas do pool estão com limite de taxa no momento.');
