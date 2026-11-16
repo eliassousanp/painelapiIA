@@ -690,7 +690,7 @@ async function executeWithFallbackStream(targetEngine, contents, systemInstructi
 // -------------------------------------------------------------
 // EXECUÇÃO EM PROVEDORES EXTERNOS (ex: api.b.ai, OpenAI, etc)
 // -------------------------------------------------------------
-async function executeExternalProvider(providerId, targetEngine, incomingMessages, systemInstruction, rawTools = null, maxTokens = undefined) {
+async function executeExternalProvider(providerId, targetEngine, incomingMessages, systemInstruction, rawTools = null, maxTokens = undefined, streamOptions = null) {
   const [providers] = await pool.query('SELECT * FROM providers WHERE id = ?', [providerId]);
   if (providers.length === 0 || providers[0].status !== 'active') {
     throw new Error(`Provedor de IA (ID ${providerId}) não encontrado ou inativo.`);
@@ -740,6 +740,7 @@ async function executeExternalProvider(providerId, targetEngine, incomingMessage
     temperature: 0.7
   };
   if (Number.isInteger(maxTokens) && maxTokens > 0) reqBody.max_tokens = maxTokens;
+  if (streamOptions && !rawTools?.length) reqBody.stream = true;
 
   if (rawTools && Array.isArray(rawTools) && rawTools.length > 0) {
     reqBody.tools = sanitizeToolsForProvider(rawTools);
@@ -755,7 +756,7 @@ async function executeExternalProvider(providerId, targetEngine, incomingMessage
         'User-Agent': 'BRLoveAPI-Gateway/5.0'
       },
       body: JSON.stringify(reqBody),
-      signal: AbortSignal.timeout(600000) // 10 minutos para raciocínios longos e thinking models
+      signal: streamOptions?.signal ? AbortSignal.any([streamOptions.signal,AbortSignal.timeout(600000)]) : AbortSignal.timeout(600000)
     });
   } catch (netErr) {
     // Se falhou e tinha /v1 adicionado automaticamente, tenta fallback para /chat/completions puro
@@ -781,6 +782,30 @@ async function executeExternalProvider(providerId, targetEngine, incomingMessage
     }
   }
 
+  if (res.ok && reqBody.stream && res.headers.get('content-type')?.includes('text/event-stream')) {
+    if(!res.body)throw new Error(`[${provider.name}] Transmissão sem corpo.`);
+    const reader=res.body.getReader(),decoder=new TextDecoder();let buffer='',replyText='',finishReason=null,done=false;
+    try {
+      while(true) {
+        const part=await reader.read();buffer+=decoder.decode(part.value || new Uint8Array(),{stream:!part.done});
+        const events=buffer.split(/\r?\n\r?\n/);buffer=events.pop();
+        for(const event of events) {
+          const payload=event.split(/\r?\n/).filter(line=>line.startsWith('data:')).map(line=>line.slice(5).trimStart()).join('\n');
+          if(!payload)continue;if(payload==='[DONE]'){done=true;break;}
+          let chunk;try{chunk=JSON.parse(payload);}catch{throw new Error('Provedor enviou evento de transmissão inválido.');}
+          if(chunk.error)throw new Error(`Provedor interrompeu a transmissão: ${String(chunk.error.message || chunk.error).slice(0,200)}`);
+          const choice=chunk.choices?.[0],piece=choice?.delta?.content;
+          if(typeof piece==='string' && piece){replyText+=piece;streamOptions.onChunk?.(piece);}
+          if(choice?.finish_reason)finishReason=choice.finish_reason;
+        }
+        if(done || part.done)break;
+      }
+      if(!done && !finishReason)throw new Error('Transmissão do provedor terminou incompleta.');
+      if(!replyText){const error=new Error(`[${provider.name}] Resposta vazia (término: ${finishReason || 'não informado'}).`);error.status=503;throw error;}
+      await pool.query('UPDATE provider_keys SET last_used_at = NOW(), error_count = 0 WHERE id = ?', [pKey.id]).catch(()=>{});
+      return {replyText,toolCalls:[],provider,account:null,finishReason};
+    } catch(error) {if(replyText)error.partialOutput=true;throw error;}
+  }
   const resText = await res.text();
   let json;
   try {
@@ -828,7 +853,7 @@ async function executeExternalProvider(providerId, targetEngine, incomingMessage
   for (const key of keys) {
     try {return await runWithKey(key);}
     catch(error) {
-      last=error;const status=error.status || Number(String(error.message || '').match(/(?:HTTP|Status)\s+(\d{3})/i)?.[1]);
+      last=error;if(error.partialOutput || streamOptions?.signal?.aborted)throw error;const status=error.status || Number(String(error.message || '').match(/(?:HTTP|Status)\s+(\d{3})/i)?.[1]);
       if(![401,402,403,404,408,429,500,502,503,504].includes(status) && !/conexão|timeout|timed out|fetch failed|econn/i.test(String(error.message || '')))throw error;
     }
   }
@@ -841,8 +866,9 @@ async function executeSmartRoutes(routes,{messages,contents,system,rawModel,conf
     try {
       if(!route.providerId)throw new Error(`Provedor não identificado para ${route.model}; edite o roteamento e selecione o provedor.`);
       if(route.providerId!==2) {
-        const out=await executeExternalProvider(route.providerId,route.model,messages,system,tools,maxTokens);
-        if(stream && out.replyText){emitted=true;onChunk(out.replyText);}
+        let streamed=false;
+        const out=await executeExternalProvider(route.providerId,route.model,messages,system,tools,maxTokens,stream?{signal,onChunk:chunk=>{streamed=true;emitted=true;onChunk(chunk);}}:null);
+        if(stream && !streamed && out.replyText){emitted=true;onChunk(out.replyText);}
         return {replyText:out.replyText || '',toolCalls:out.toolCalls || [],finishReason:out.finishReason,account:null,usedModel:route.model};
       }
       if(stream) {
@@ -2208,8 +2234,8 @@ app.post(['/openai/deployments/:deployment/chat/completions', '/v1/chat/completi
           const out=await executeSmartRoutes(routeCandidates,{messages:taskMessages,contents:taskContents,system:taskSystem,rawModel,config:{...customConfig,tools:null},tools:null,maxTokens:req.body.max_tokens,stream:true,onChunk,signal:controller.signal,accountWaitMs:60000});
           reply=out.replyText;account=out.account;usedModel=out.usedModel;finishReason=out.finishReason;usedMultiplier=out.route.multiplier;
         } else if(providerId && providerId != 2) {
-          const out=await executeExternalProvider(providerId,targetEngine,taskMessages,taskSystem,null,req.body.max_tokens);
-          reply=out.replyText || '';finishReason=out.finishReason;if(reply)onChunk(reply);
+          let streamed=false;const out=await executeExternalProvider(providerId,targetEngine,taskMessages,taskSystem,null,req.body.max_tokens,{signal:controller.signal,onChunk:chunk=>{streamed=true;onChunk(chunk);}});
+          reply=out.replyText || '';finishReason=out.finishReason;if(reply && !streamed)onChunk(reply);
         } else {
           const taskContents=convertOpenAiMessagesToGemini(taskMessages).contents;
           const out=await executeWithFallbackStream(targetEngine,taskContents,taskSystem,rawModel,{...customConfig,tools:null},chunk=>{if(chunk)onChunk(chunk);},controller.signal,600000);
@@ -2264,11 +2290,12 @@ app.post(['/openai/deployments/:deployment/chat/completions', '/v1/chat/completi
         const out=await executeSmartRoutes(routeCandidates,{messages:incomingMessages,contents,system:finalSystemInstruction,rawModel,config:customConfig,tools:rawTools,maxTokens:req.body.max_tokens,stream:true,onChunk:emitChunk,signal:abortController.signal});
         replyText=out.replyText;toolCalls=out.toolCalls;account=out.account;usedModel=out.usedModel;upstreamFinishReason=out.finishReason;usedMultiplier=out.route.multiplier;
       } else if (providerId && providerId != 2) {
-        const extResult = await executeExternalProvider(providerId, targetEngine, incomingMessages, finalSystemInstruction, rawTools, req.body.max_tokens);
+        let streamed=false;
+        const extResult = await executeExternalProvider(providerId, targetEngine, incomingMessages, finalSystemInstruction, rawTools, req.body.max_tokens, {signal:abortController.signal,onChunk:chunk=>{streamed=true;res.write(`data: ${JSON.stringify({id:compId,object:'chat.completion.chunk',created:Math.floor(Date.now()/1000),model:rawModel,choices:[{index:0,delta:{content:chunk},finish_reason:null}]})}\n\n`);}});
         replyText = extResult.replyText;
         toolCalls = extResult.toolCalls || [];
         upstreamFinishReason = extResult.finishReason;
-        if (replyText) {
+        if (replyText && !streamed) {
           res.write(`data: ${JSON.stringify({
             id: compId,
             object: 'chat.completion.chunk',
