@@ -352,6 +352,7 @@ foreach ($accounts as $acc) {
                 'provider' => $provider,
                 'fractionSum' => 0,
                 'fractionCount' => 0,
+                'quotaAmounts' => [],
                 'activeAccountsCount' => 0,
                 'nextResetTime' => null
             ];
@@ -367,6 +368,16 @@ foreach ($accounts as $acc) {
         }
 
         $resetTime = $mInfo['quotaInfo']['resetTime'] ?? null;
+        foreach (($mInfo['quotaInfo']['buckets'] ?? []) as $bucket) {
+            if (isset($bucket['remainingAmount']) && preg_match('/^\d+$/', (string)$bucket['remainingAmount'])) {
+                $poolModelStats[$mKey]['quotaAmounts'][] = [
+                    'amount' => (string)$bucket['remainingAmount'],
+                    'type' => $bucket['tokenType'] ?? 'unidade não informada',
+                    'reset' => $bucket['resetTime'] ?? null,
+                    'account' => $acc['email'] ?? ('Conta ' . $acc['id'])
+                ];
+            }
+        }
         if (isset($mInfo['quotaInfo']['remainingFraction']) && is_numeric($mInfo['quotaInfo']['remainingFraction'])) {
             $poolModelStats[$mKey]['fractionSum'] += max(0, min(1, (float)$fraction));
             $poolModelStats[$mKey]['fractionCount']++;
@@ -584,7 +595,7 @@ require_once __DIR__ . '/includes/header.php';
                                 <?= $activeAccounts ?> CONTAS ATIVAS
                             </span>
                         </div>
-                        <p class="text-xs text-[var(--text-muted)] mt-0.5">Soma em tempo real dos tokens disponíveis e consumidos de todas as contas combinadas</p>
+                        <p class="text-xs text-[var(--text-muted)] mt-0.5">Cotas informadas pelo Google e uso estimado registrado pelo gateway</p>
                     </div>
                 </div>
 
@@ -649,6 +660,16 @@ require_once __DIR__ . '/includes/header.php';
                             </div>
                         </div>
 
+                        <div class="px-2.5 py-2 rounded-xl border border-[var(--border-color)] text-xs" style="background: var(--bg-surface-elevated);">
+                            <div class="font-bold text-[var(--text-heading)]">Saldo disponível informado pelo Google</div>
+                            <?php if (!$pStat['quotaAmounts']): ?>
+                                <div class="text-[var(--text-muted)]">Quantidade de tokens não informada; somente o percentual está disponível.</div>
+                            <?php else: ?>
+                                <?php foreach ($pStat['quotaAmounts'] as $amount): ?>
+                                    <div class="text-[var(--text-muted)]"><?= htmlspecialchars($amount['account'], ENT_QUOTES, 'UTF-8') ?>: <strong class="text-emerald-400"><?= htmlspecialchars($amount['amount'], ENT_QUOTES, 'UTF-8') ?> <?= htmlspecialchars($amount['type'], ENT_QUOTES, 'UTF-8') ?></strong><?= $amount['reset'] ? ' · renovação: ' . htmlspecialchars($amount['reset'], ENT_QUOTES, 'UTF-8') : '' ?></div>
+                                <?php endforeach; ?>
+                            <?php endif; ?>
+                        </div>
                         <div class="px-2.5 py-2 rounded-xl border border-[var(--border-color)] text-xs" style="background: var(--bg-surface-elevated);">
                             <span class="text-[var(--text-muted)]">Uso estimado registrado pelo gateway neste modelo, desde a atualização:</span>
                             <strong class="text-amber-300"><?= $actualUsageAvailable ? number_format($actualUsage[$pKey] ?? 0, 0, ',', '.') . ' tokens' : 'indisponível até a migração' ?></strong>
