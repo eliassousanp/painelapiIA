@@ -2224,6 +2224,13 @@ app.post(['/openai/deployments/:deployment/chat/completions', '/v1/chat/completi
     maxOutputTokens: req.body.max_tokens || 8192,
     tools: geminiTools
   };
+  // Na rota de vídeo o raciocínio do modelo é descartado (stripThinking) antes de
+  // parsear o código — gerar o <thinking> é só latência. Zeramos o thinkingBudget
+  // por padrão (o cliente pode reativar enviando thinking_budget). Em motores/modelos
+  // sem thinking este campo é ignorado, então é seguro para todos.
+  if (videoPrompt) {
+    customConfig.thinkingBudget = Number.isInteger(req.body.thinking_budget) ? req.body.thinking_budget : 0;
+  }
 
   if (videoPrompt && req.body.video_team === true) {
     if (req.body.stream !== true || !Array.isArray(incomingMessages) || !incomingMessages.length || rawTools) return res.status(400).json({error:{message:'O modo equipe exige stream=true, mensagens e nenhuma ferramenta externa.'}});
