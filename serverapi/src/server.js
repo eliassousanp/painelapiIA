@@ -2786,15 +2786,21 @@ initMcp(app, {
   pool
 });
 
-// Rotina em segundo plano: Sincronizacao periodica de cotas com o Google a cada 5 minutos
-setInterval(async () => {
-  try {
-    const [accounts] = await pool.query('SELECT * FROM antigravity_accounts WHERE is_active = 1');
-    await Promise.allSettled(accounts.map(acc => syncSingleAccount(acc, false)));
-  } catch (err) {
-    console.warn('[Periodic Quota Sync] Erro:', err.message);
-  }
-}, 5 * 60 * 1000);
+// Anti-ban: o sync periodico automatico de 5 minutos foi DESLIGADO.
+// Ele batia no Google 24/7 (mesmo com o painel fechado) para todas as contas,
+// gerando trafego automatizado sem interacao humana - padrao que o antifraude
+// do Google usa para banir contas. Agora a sincronizacao so acontece quando o
+// painel esta aberto (disparo no navegador, limitado a 1x a cada 30min) ou
+// quando o admin clica em "Sincronizar" manualmente.
+//
+// setInterval(async () => {
+//   try {
+//     const [accounts] = await pool.query('SELECT * FROM antigravity_accounts WHERE is_active = 1');
+//     await Promise.allSettled(accounts.map(acc => syncSingleAccount(acc, false)));
+//   } catch (err) {
+//     console.warn('[Periodic Quota Sync] Erro:', err.message);
+//   }
+// }, 5 * 60 * 1000);
 
 httpServer.listen(PORT, () => {
   console.log(`\n=============================================================`);
