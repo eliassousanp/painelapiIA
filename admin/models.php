@@ -157,6 +157,24 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
                         ];
                     }
 
+                    // Modelos Gemini 4 conhecidos (codinomes embutidos no cliente Antigravity).
+                    // O fetchAvailableModels do Google nem sempre devolve todos, então garantimos
+                    // que apareçam no catálogo para poderem ser cadastrados/mascarados no painel.
+                    $knownGemini4 = [
+                        ['upstream' => 'gemini-4-hydrogen-sonar', 'name' => 'Gemini 4 Hydrogen Sonar'],
+                        ['upstream' => 'gemini-4-argon-low', 'name' => 'Gemini 4 Argon (Low)'],
+                        ['upstream' => 'gemini-4-argon-medium', 'name' => 'Gemini 4 Argon (Medium)'],
+                        ['upstream' => 'gemini-4-argon-high', 'name' => 'Gemini 4 Argon (High)']
+                    ];
+                    $existingUpstreams = [];
+                    foreach ($importedModels as $imp) { $existingUpstreams[$imp['upstream']] = true; }
+                    foreach ($knownGemini4 as $km) {
+                        if (!isset($existingUpstreams[$km['upstream']])) {
+                            $importedModels[] = $km;
+                            $existingUpstreams[$km['upstream']] = true;
+                        }
+                    }
+
                     $savedCount = 0;
                     $stmtIns = $db->prepare("INSERT INTO provider_models (provider_id, upstream_model, name) VALUES (?, ?, ?) ON DUPLICATE KEY UPDATE name = VALUES(name)");
                     foreach ($importedModels as $imp) {

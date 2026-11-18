@@ -1425,9 +1425,11 @@ document.addEventListener('DOMContentLoaded', function() {
         return;
     }
 
-    // Se há contas ativas e a última sincronização no banco tem mais de 60 segundos:
-    if (activeAccounts > 0 && secondsSinceLastSync > 60) {
-        showBadgeStatus('<i class="fa-solid fa-arrows-rotate fa-spin text-[10px]"></i><span>Sincronizando cotas e probe de Opus automaticamente...</span>', 'loading');
+    // Anti-ban: só sincroniza automaticamente se a última sync tem mais de 30 minutos.
+    // Isso evita bater no Google a cada carregamento de página (padrão que o antifraude
+    // do Google detecta como robô). Sincronização manual continua disponível no botão.
+    if (activeAccounts > 0 && secondsSinceLastSync > 1800) {
+        showBadgeStatus('<i class="fa-solid fa-arrows-rotate fa-spin text-[10px]"></i><span>Sincronizando cotas automaticamente...</span>', 'loading');
 
         fetch('accounts.php?ajax_verify_quotas=1', { cache: 'no-store' })
             .then(res => res.json())
