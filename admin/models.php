@@ -112,13 +112,50 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
                 );
 
                 if ($isAntigravity) {
-                    $importedModels = [
-                        ['upstream' => 'gemini-3.8-flash-medium', 'name' => 'Gemini 3.8 Flash Medium'],
-                        ['upstream' => 'gemini-3.8-flash-high', 'name' => 'Gemini 3.8 Flash High'],
-                        ['upstream' => 'claude-sonnet-4-6', 'name' => 'Claude Sonnet 4.6 (Thinking)'],
-                        ['upstream' => 'claude-opus-4-6-thinking', 'name' => 'Claude Opus 4.6 (Thinking)'],
-                        ['upstream' => 'gpt-oss-120b-medium', 'name' => 'GPT-OSS 120B (Medium)']
-                    ];
+                    // Primeiro força uma sincronização fresca com o Google para atualizar o
+                    // catálogo salvo em antigravity_accounts.quotas_json antes de lê-lo.
+                    gateway_request('auth/antigravity/sync', 'GET', null, 30);
+
+                    // Catálogo real: lê os modelos que o Google retornou de verdade para as
+                    // contas conectadas (salvos em antigravity_accounts.quotas_json pelo gateway).
+                    // Assim o plano Ultra passa a mostrar exatamente os modelos liberados
+                    // (incluindo Gemini 4) em vez de uma lista fixa desatualizada.
+                    $importedModels = [];
+                    $seenModels = [];
+                    try {
+                        $stmtQuotas = $db->query("SELECT quotas_json FROM antigravity_accounts WHERE quotas_json IS NOT NULL AND quotas_json <> '' ORDER BY last_sync_at DESC");
+                        foreach ($stmtQuotas->fetchAll(PDO::FETCH_COLUMN) as $quotasRaw) {
+                            $quotas = json_decode($quotasRaw, true);
+                            if (!is_array($quotas) || empty($quotas['models']) || !is_array($quotas['models'])) {
+                                continue;
+                            }
+                            foreach ($quotas['models'] as $modelKey => $modelInfo) {
+                                $modelKey = trim((string)$modelKey);
+                                if ($modelKey === '' || isset($seenModels[$modelKey])) {
+                                    continue;
+                                }
+                                $seenModels[$modelKey] = true;
+                                $modelName = is_array($modelInfo) ? trim((string)($modelInfo['displayName'] ?? '')) : '';
+                                $importedModels[] = [
+                                    'upstream' => $modelKey,
+                                    'name' => $modelName !== '' ? $modelName : $modelKey
+                                ];
+                            }
+                        }
+                    } catch (Exception $e) {
+                        $importedModels = [];
+                    }
+
+                    // Fallback: se nenhuma conta tiver catálogo salvo ainda, usa a lista mínima conhecida.
+                    if (empty($importedModels)) {
+                        $importedModels = [
+                            ['upstream' => 'gemini-3.8-flash-medium', 'name' => 'Gemini 3.8 Flash Medium'],
+                            ['upstream' => 'gemini-3.8-flash-high', 'name' => 'Gemini 3.8 Flash High'],
+                            ['upstream' => 'claude-sonnet-4-6', 'name' => 'Claude Sonnet 4.6 (Thinking)'],
+                            ['upstream' => 'claude-opus-4-6-thinking', 'name' => 'Claude Opus 4.6 (Thinking)'],
+                            ['upstream' => 'gpt-oss-120b-medium', 'name' => 'GPT-OSS 120B (Medium)']
+                        ];
+                    }
 
                     $savedCount = 0;
                     $stmtIns = $db->prepare("INSERT INTO provider_models (provider_id, upstream_model, name) VALUES (?, ?, ?) ON DUPLICATE KEY UPDATE name = VALUES(name)");
@@ -127,7 +164,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
                         $savedCount++;
                     }
                     $msg = "⚡ Sucesso! Foram sincronizados $savedCount modelos do Google Antigravity para você cadastrar/mascarar no painel!";
-                    gateway_request('auth/antigravity/sync', 'GET', null, 5);
                 } else {
                     $apiKey = !empty($customApiKey) ? preg_replace('/^Bearer\s+/i', '', $customApiKey) : '';
                     if (empty($apiKey)) {
