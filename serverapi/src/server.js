@@ -1262,7 +1262,10 @@ async function logUsage(userKey, model, promptTokens, completionTokens, accountI
           if (accRows.length > 0) {
             const lastSync = accRows[0].last_sync_at ? new Date(accRows[0].last_sync_at).getTime() : 0;
             if (Date.now() - lastSync > 120000) {
-              await syncSingleAccount(accRows[0]);
+              // Anti-ban: NUNCA dispara probe de Opus automaticamente (false).
+              // So le as cotas oficiais piggyback numa requisicao real do usuario.
+              // O probe real de Opus (generateContent extra) fica apenas sob demanda no painel.
+              await syncSingleAccount(accRows[0], false);
               console.log(`[Auto-Sync] Cotas sincronizadas em segundo plano para conta ${accRows[0].email}`);
             }
           }
