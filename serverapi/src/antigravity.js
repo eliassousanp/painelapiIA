@@ -14,9 +14,9 @@ const DAILY_ENDPOINT = 'https://daily-cloudcode-pa.googleapis.com';
 const CLOUD_CODE_ENDPOINT = 'https://cloudcode-pa.googleapis.com';
 
 const HEADERS = {
-  'User-Agent': 'antigravity/2.18.0 windows/amd64',
+  'User-Agent': 'antigravity/2.7.0 windows/amd64',
   'X-Client-Name': 'antigravity',
-  'X-Client-Version': '2.18.0',
+  'X-Client-Version': '2.7.0',
   'x-goog-api-client': 'gl-node/20.11.0 fire/0.8.6 grpc/1.10.x ide/antigravity',
   'X-Requested-With': 'XMLHttpRequest',
   'Content-Type': 'application/json'
