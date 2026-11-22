@@ -179,8 +179,16 @@ $totalTokens = array_sum(array_column($accounts, 'total_tokens'));
 // Função para diagnosticar se a conta realmente possui cota de Claude Opus e calcular quantidade exata de tokens
 function getAccountOpusQuotaStatus($acc) {
     $q = !empty($acc['quotas_json']) ? json_decode($acc['quotas_json'], true) : null;
-    $opusKey = 'claude-opus-4-6-thinking';
-    $mInfo = $q['models'][$opusKey] ?? null;
+    $opusKey = 'claude-opus-5.5';
+    $mInfo = $q['models'][$opusKey] ?? $q['models']['claude-opus-4-6-thinking'] ?? null;
+    if (!$mInfo && !empty($q['models'])) {
+        foreach ($q['models'] as $k => $info) {
+            if (stripos($k, 'opus') !== false) {
+                $mInfo = $info;
+                break;
+            }
+        }
+    }
 
     $hasOpusQuota = $mInfo['quotaInfo']['hasOpusQuota'] ?? ($q['hasOpusQuota'] ?? null);
     $fraction = isset($mInfo['quotaInfo']['remainingFraction']) ? (float)$mInfo['quotaInfo']['remainingFraction'] : null;
@@ -324,7 +332,8 @@ $keyModels = [
     'gemini-3.8-flash-medium' => ['name' => 'Gemini 3.8 Flash Medium', 'tag' => 'Google (Fast)', 'color' => 'bg-cyan-500'],
     'gemini-3.8-flash-high' => ['name' => 'Gemini 3.8 Flash High', 'tag' => 'Google (Pro)', 'color' => 'bg-blue-500'],
     'claude-sonnet-4-6' => ['name' => 'Claude Sonnet 4.6 (Thinking)', 'tag' => 'Anthropic', 'color' => 'bg-purple-500'],
-    'claude-opus-4-6-thinking' => ['name' => 'Claude Opus 4.6 (Thinking)', 'tag' => 'Anthropic', 'color' => 'bg-pink-500'],
+    'claude-opus-5.5' => ['name' => 'Claude Opus 5.5 (Thinking)', 'tag' => 'Anthropic', 'color' => 'bg-pink-500'],
+    'claude-opus-4-6-thinking' => ['name' => 'Claude Opus 4.6 (Legado)', 'tag' => 'Anthropic', 'color' => 'bg-pink-500'],
     'gpt-oss-120b-medium' => ['name' => 'GPT-OSS 120B (Medium)', 'tag' => 'OpenAI', 'color' => 'bg-amber-500']
 ];
 
@@ -364,7 +373,7 @@ foreach ($accounts as $acc) {
         $fraction = (float)($mInfo['quotaInfo']['remainingFraction'] ?? 1.0);
 
         // Se for Opus, só adiciona tokens disponíveis se a conta realmente tiver cota confirmada
-        if ($mKey === 'claude-opus-4-6-thinking') {
+        if ($mKey === 'claude-opus-5.5' || $mKey === 'claude-opus-4-6-thinking' || stripos($mKey, 'opus') !== false) {
             if (!$accOpusStat['has_quota']) {
                 $fraction = 0.0;
             }
@@ -623,7 +632,7 @@ require_once __DIR__ . '/includes/header.php';
                 $featuredPoolKeys = [
                     'gemini-3.8-flash-medium',
                     'claude-sonnet-4-6',
-                    'claude-opus-4-6-thinking'
+                    'claude-opus-5.5'
                 ];
                 foreach (array_keys($poolModelStats) as $discoveredKey) {
                     if (preg_match('/gemini|claude.*(?:sonnet|opus)/i', $discoveredKey) && !in_array($discoveredKey, $featuredPoolKeys, true)) $featuredPoolKeys[]=$discoveredKey;
@@ -929,7 +938,7 @@ require_once __DIR__ . '/includes/header.php';
                                     'gemini-3.8-flash-medium',
                                     'gemini-3.8-flash-high',
                                     'claude-sonnet-4-6',
-                                    'claude-opus-4-6-thinking',
+                                    'claude-opus-5.5',
                                     'gpt-oss-120b-medium'
                                 ];
                                 foreach (array_keys($modelsQuotas) as $discoveredKey) {
@@ -952,7 +961,7 @@ require_once __DIR__ . '/includes/header.php';
                                     $maxTokens = $mQuota['maxTokens'] ?? 1048576;
 
                                     // Lógica especial de cota real para Claude Opus
-                                    $isOpus = $mKey === 'claude-opus-4-6-thinking';
+                                    $isOpus = ($mKey === 'claude-opus-5.5' || $mKey === 'claude-opus-4-6-thinking' || stripos($mKey, 'opus') !== false);
                                     $opusNote = null;
                                     if ($isOpus) {
                                         $maxTokens = $accOpus['max_tokens'];
@@ -1056,7 +1065,7 @@ require_once __DIR__ . '/includes/header.php';
                                         if (preg_match('/(2\.5|3\.5|3\.6|3\.7)/i', $modKey)) continue;
 
                                         $f = isset($modDetails['quotaInfo']['remainingFraction']) && is_numeric($modDetails['quotaInfo']['remainingFraction']) ? max(0, min(1, (float)$modDetails['quotaInfo']['remainingFraction'])) : null;
-                                        if ($modKey === 'claude-opus-4-6-thinking' && !$accOpus['has_quota']) {
+                                        if (($modKey === 'claude-opus-5.5' || $modKey === 'claude-opus-4-6-thinking' || stripos($modKey, 'opus') !== false) && !$accOpus['has_quota']) {
                                             $f = 0.0;
                                         }
                                         $p = $f === null ? null : round($f * 100);

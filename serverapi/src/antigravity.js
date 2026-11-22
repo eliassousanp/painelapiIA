@@ -154,6 +154,16 @@ function postRequest(endpointUrl, bodyData, accessToken, timeoutMs = 600000, acc
         try {
           const json = JSON.parse(data);
           if (res.statusCode >= 200 && res.statusCode < 300) {
+            // Intercepta aviso em texto de modelo descontinuado/indisponível retornado pelo Google com status 200
+            const firstText = json?.response?.candidates?.[0]?.content?.parts?.[0]?.text ||
+                              json?.candidates?.[0]?.content?.parts?.[0]?.text || '';
+            if (firstText && /is no longer available|please switch to|is not available/i.test(firstText)) {
+              return reject({
+                status: 404,
+                data: json,
+                message: `CloudCode API Model Deprecated (404): ${firstText.trim()}`
+              });
+            }
             resolve(json);
           } else {
             reject({
@@ -392,7 +402,14 @@ export function streamGenerateContent(accessToken, projectId, model, contents, s
         if(candidate?.content?.parts) for(const p of candidate.content.parts) {
           if(p.thoughtSignature || p.thought_signature)chunkSig=p.thoughtSignature || p.thought_signature;
           if(p.thought) {if(typeof onChunk==='function')onChunk(null,null,{thinking:true,thought:p.text || ''});continue;}
-          if(p.text) {fullReplyText+=p.text;emitted=true;if(typeof onChunk==='function')onChunk(p.text,null);}
+          if(p.text) {
+            // Se o primeiro texto recebido for aviso de descontinuação do Google (ex: "Claude Opus 4.6 is no longer available...")
+            if(!fullReplyText && /is no longer available|please switch to|is not available/i.test(p.text)) {
+              fail(new Error(`CloudCode API model deprecated: ${p.text.trim()}`));
+              return;
+            }
+            fullReplyText+=p.text;emitted=true;if(typeof onChunk==='function')onChunk(p.text,null);
+          }
           if(p.functionCall) {
             const sig=p.thoughtSignature || p.thought_signature || p.functionCall?.thoughtSignature || p.functionCall?.thought_signature || chunkSig;
             const callObj={name:p.functionCall.name,args:p.functionCall.args || {},id:p.functionCall.id || ('call_'+Math.random().toString(36).substring(2,10)),thoughtSignature:sig};

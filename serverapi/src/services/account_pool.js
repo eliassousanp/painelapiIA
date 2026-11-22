@@ -323,7 +323,10 @@ class AntigravityAccountPool {
       if (actualModel.includes('claude')) {
         stat.modelCooldowns.set('claude', Date.now() + cooldownMs);
         stat.modelCooldowns.set('claude-sonnet-4-6', Date.now() + cooldownMs);
-        if (actualModel.includes('opus')) stat.modelCooldowns.set('claude-opus-4-6-thinking', Date.now() + cooldownMs);
+        if (actualModel.includes('opus')) {
+          stat.modelCooldowns.set('claude-opus-5.5', Date.now() + cooldownMs);
+          stat.modelCooldowns.set('claude-opus-4-6-thinking', Date.now() + cooldownMs);
+        }
       }
       try {
         const [rows] = await this.pool.query('SELECT quotas_json FROM antigravity_accounts WHERE id = ?', [accId]);
@@ -400,9 +403,12 @@ class AntigravityAccountPool {
         const status = err.status || err.statusCode || 0;
         const msg = (err.message || '').toLowerCase();
 
-        // Se o modelo retornou 404 NOT FOUND no Google Cloud Code, faz fallback seguro para gemini-3.8-flash-medium
-        if (!options.strict && (status === 404 || msg.includes('not found')) && targetEngine !== 'gemini-3.8-flash-medium') {
-          console.warn(`[Pool Fallback] Modelo "${targetEngine}" retornou 404 NOT FOUND no Google. Redirecionando com segurança para "gemini-3.8-flash-medium"...`);
+        // Se o modelo retornou 404 NOT FOUND ou aviso de modelo descontinuado/indisponível no Google Cloud Code
+        if (!options.strict && (status === 404 || msg.includes('not found') || msg.includes('deprecated') || msg.includes('no longer available') || msg.includes('not available')) && targetEngine !== 'gemini-3.8-flash-medium') {
+          console.warn(`[Pool Fallback] Modelo "${targetEngine}" indisponível/descontinuado no Google (${err.message}). Redirecionando com segurança...`);
+          if (targetEngine.includes('opus')) {
+            return await this.executeWithFallback('claude-sonnet-4-6', contents, systemInstruction, rawModel, customConfig);
+          }
           return await this.executeWithFallback('gemini-3.8-flash-medium', contents, systemInstruction, rawModel, customConfig);
         }
 
@@ -484,9 +490,12 @@ class AntigravityAccountPool {
         const status = err.status || err.statusCode || 0;
         const msg = (err.message || '').toLowerCase();
 
-        // Se o modelo retornou 404 NOT FOUND no Google Cloud Code durante streaming, faz fallback seguro para gemini-3.8-flash-medium
-        if (!options.strict && (status === 404 || msg.includes('not found')) && targetEngine !== 'gemini-3.8-flash-medium') {
-          console.warn(`[Pool Stream Fallback] Modelo "${targetEngine}" retornou 404 NOT FOUND no Google. Redirecionando streaming com segurança para "gemini-3.8-flash-medium"...`);
+        // Se o modelo retornou 404 NOT FOUND ou aviso de modelo descontinuado/indisponível durante streaming
+        if (!options.strict && (status === 404 || msg.includes('not found') || msg.includes('deprecated') || msg.includes('no longer available') || msg.includes('not available')) && targetEngine !== 'gemini-3.8-flash-medium') {
+          console.warn(`[Pool Stream Fallback] Modelo "${targetEngine}" indisponível/descontinuado no Google (${err.message}). Redirecionando streaming com segurança...`);
+          if (targetEngine.includes('opus')) {
+            return await this.executeWithFallbackStream('claude-sonnet-4-6', contents, systemInstruction, requestedModel, customConfig, onChunk, abortSignal, accountWaitMs);
+          }
           return await this.executeWithFallbackStream('gemini-3.8-flash-medium', contents, systemInstruction, requestedModel, customConfig, onChunk, abortSignal, accountWaitMs);
         }
 

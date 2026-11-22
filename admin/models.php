@@ -152,7 +152,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
                             ['upstream' => 'gemini-3.8-flash-medium', 'name' => 'Gemini 3.8 Flash Medium'],
                             ['upstream' => 'gemini-3.8-flash-high', 'name' => 'Gemini 3.8 Flash High'],
                             ['upstream' => 'claude-sonnet-4-6', 'name' => 'Claude Sonnet 4.6 (Thinking)'],
-                            ['upstream' => 'claude-opus-4-6-thinking', 'name' => 'Claude Opus 4.6 (Thinking)'],
+                            ['upstream' => 'claude-opus-5.5', 'name' => 'Claude Opus 5.5 (Thinking)'],
+                            ['upstream' => 'claude-opus-4-6-thinking', 'name' => 'Claude Opus 4.6 (Legado)'],
                             ['upstream' => 'gpt-oss-120b-medium', 'name' => 'GPT-OSS 120B (Medium)']
                         ];
                     }
@@ -330,11 +331,10 @@ foreach ($providers as $p) {
         if ($pId == 2 || stripos($p['name'], 'antigravity') !== false) {
             $pModels = [
                 ['upstream_model' => 'gemini-3.8-flash-medium', 'name' => 'Gemini 3.8 Flash Medium'],
-                ['upstream_model' => 'gemini-3.7-flash-medium', 'name' => 'Gemini 3.7 Flash Medium'],
-                ['upstream_model' => 'gemini-3.6-flash-medium', 'name' => 'Gemini 3.6 Flash Medium'],
-                ['upstream_model' => 'gemini-3.1-pro-low', 'name' => 'Gemini 3.1 Pro Low'],
+                ['upstream_model' => 'gemini-3.8-flash-high', 'name' => 'Gemini 3.8 Flash High'],
                 ['upstream_model' => 'claude-sonnet-4-6', 'name' => 'Claude Sonnet 4.6 (Thinking)'],
-                ['upstream_model' => 'claude-opus-4-6-thinking', 'name' => 'Claude Opus 4.6 (Thinking)'],
+                ['upstream_model' => 'claude-opus-5.5', 'name' => 'Claude Opus 5.5 (Thinking)'],
+                ['upstream_model' => 'claude-opus-4-6-thinking', 'name' => 'Claude Opus 4.6 (Legado)'],
                 ['upstream_model' => 'gpt-oss-120b-medium', 'name' => 'GPT-OSS 120B (Medium)']
             ];
         } else {

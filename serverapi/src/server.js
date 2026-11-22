@@ -326,10 +326,10 @@ async function syncSingleAccount(acc, shouldProbeOpus = false) {
   }
   if (buckets) quotas=mergeGoogleQuotaBuckets(quotas,buckets).catalog;
 
-  // 2. Teste real e definitivo de cota do Claude Opus 4.6 (probe leve de 1 token)
-  const opusModelKey = 'claude-opus-4-6-thinking';
-  const opusFresh = (buckets?.buckets || []).some(b=>b?.modelId===opusModelKey && typeof b.remainingFraction==='number') || (catalogResult.status==='fulfilled' && typeof catalogResult.value?.models?.[opusModelKey]?.quotaInfo?.remainingFraction==='number');
-  const observedOpus=quotas.models?.[opusModelKey]?.quotaInfo?.remainingFraction;
+  // 2. Teste real e definitivo de cota do Claude Opus (probe leve de 1 token)
+  const opusModelKey = 'claude-opus-5.5';
+  const opusFresh = (buckets?.buckets || []).some(b=>(b?.modelId===opusModelKey || b?.modelId==='claude-opus-4-6-thinking') && typeof b.remainingFraction==='number') || (catalogResult.status==='fulfilled' && (typeof catalogResult.value?.models?.[opusModelKey]?.quotaInfo?.remainingFraction==='number' || typeof catalogResult.value?.models?.['claude-opus-4-6-thinking']?.quotaInfo?.remainingFraction==='number'));
+  const observedOpus=quotas.models?.[opusModelKey]?.quotaInfo?.remainingFraction ?? quotas.models?.['claude-opus-4-6-thinking']?.quotaInfo?.remainingFraction;
   let hasOpus = typeof observedOpus==='number' ? observedOpus>0 : null;
   let opusFraction = typeof observedOpus==='number' ? observedOpus : null;
   let opusMessage = '';
@@ -366,16 +366,16 @@ async function syncSingleAccount(acc, shouldProbeOpus = false) {
       }
     }
   } else {
-    if (hasOpus===null) hasOpus=quotas.models?.[opusModelKey]?.quotaInfo?.hasOpusQuota ?? quotas.hasOpusQuota ?? null;
+    if (hasOpus===null) hasOpus=quotas.models?.[opusModelKey]?.quotaInfo?.hasOpusQuota ?? quotas.models?.['claude-opus-4-6-thinking']?.quotaInfo?.hasOpusQuota ?? quotas.hasOpusQuota ?? null;
     opusMessage = quotas.opusMessage ?? '';
-    opusResetTime = quotas.models?.[opusModelKey]?.quotaInfo?.resetTime ?? null;
+    opusResetTime = quotas.models?.[opusModelKey]?.quotaInfo?.resetTime ?? quotas.models?.['claude-opus-4-6-thinking']?.quotaInfo?.resetTime ?? null;
   }
 
   // 3. Integração do Claude Opus diretamente no mapa de modelos
   let maxOpusTokens = 1048576;
   if (!quotas.models[opusModelKey]) {
     quotas.models[opusModelKey] = {
-      displayName: 'Claude Opus 4.6 (Thinking)',
+      displayName: 'Claude Opus 5.5 (Thinking)',
       maxTokens: maxOpusTokens,
       modelProvider: 'Anthropic',
       quotaInfo: {}
@@ -1065,11 +1065,9 @@ function classifyRequestComplexity(textSample = '', totalChars = 0, totalMessage
 export function normalizeAntigravityModel(model) {
   if (!model) return 'gemini-3.8-flash-medium';
   const m = String(model).toLowerCase().trim();
-  // Se for Claude
-  if (m.startsWith('claude-')) {
-    if (m.includes('opus')) return 'claude-opus-4-6-thinking';
-    return 'claude-sonnet-4-6';
-  }
+  // Se for Claude ou Opus
+  if (m.includes('opus')) return 'claude-opus-5.5';
+  if (m.startsWith('claude-')) return 'claude-sonnet-4-6';
   // Modelos descontinuados ou abaixo do 3.8 (2.5, 3.5, 3.6, 3.7) -> converter para 3.8 oficial ativo
   if (m.includes('2.5') || m.includes('3.5') || m.includes('3.6') || m.includes('3.7') || m.includes('realtime')) {
     return 'gemini-3.8-flash-medium';
