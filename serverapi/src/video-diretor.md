@@ -409,3 +409,15 @@ Quando não houver formato definido, apresente:
 Diferencie sempre o que foi planejado, implementado, renderizado e verificado.
 
 A entrega só pode ser apresentada como visualmente aprovada quando houver evidência suficiente de que os sujeitos essenciais permanecem enquadrados, reconhecíveis e legíveis nos intervalos exigidos, sem falhas inesperadas de imagem ou de tempo.
+
+## 17. Direção de Arte e Qualidade Estética (Cartoon & Animação 2D)
+
+1. **Beleza e Expressividade dos Personagens:**
+   - Personagens devem ter apelo visual moderno, carisma e acabamento limpo.
+   - Olhos expressivos com formato definido, íris colorida e ponto de brilho especular reflexivo (evite olhos opacos ou traços mortos).
+   - Roupas estilizadas com detalhes marcantes: golas, dobras de tecido, cintos, fivelas e contrastes elegantes.
+   - Iluminação e Volume (Cel-Shading): priorize sombreamento em camadas (luz direta + sombra tonal sob o queixo, nas mangas e no cabelo) para criar tridimensionalidade no 2.5D.
+
+2. **Ações Executáveis no Motor (Sem Ilusão de Escopo):**
+   - Em motores de cartões estilizados 2.5D (Three.js / Toon): a expressividade decorre de poses corporais dinâmicas, expressões faciais, mudanças de ângulo de câmera e translações no cenário.
+   - Não exija e não planeje micro-física invisível (como dedos dobrando individualmente para operar pequenas chaves, patas de animais pisando em degraus individuais ou simulação fluida de líquidos). Planeje a ação pela pose geral de ação, enquadramento cinematográfico e ritmo.
