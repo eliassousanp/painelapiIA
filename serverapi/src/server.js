@@ -337,16 +337,35 @@ async function syncSingleAccount(acc, shouldProbeOpus = false) {
 
   if (shouldProbeOpus && opusFraction===null) {
     try {
-      await generateContent(
-        token,
-        acc.project_id || 'aicode-consumers',
-        opusModelKey,
-        [{ role: 'user', parts: [{ text: '1' }] }],
-        '',
-        { maxOutputTokens: 1, thinkingBudget: 0 }
-      );
+      let testedModel = opusModelKey;
+      try {
+        await generateContent(
+          token,
+          acc.project_id || 'aicode-consumers',
+          'claude-opus-5.5',
+          [{ role: 'user', parts: [{ text: '1' }] }],
+          '',
+          { maxOutputTokens: 1, thinkingBudget: 0 }
+        );
+        testedModel = 'claude-opus-5.5';
+      } catch (err55) {
+        const msg55 = (err55.message || '').toLowerCase();
+        if (err55.status === 404 || msg55.includes('not found') || msg55.includes('deprecated') || msg55.includes('no longer available')) {
+          await generateContent(
+            token,
+            acc.project_id || 'aicode-consumers',
+            'claude-opus-4-6-thinking',
+            [{ role: 'user', parts: [{ text: '1' }] }],
+            '',
+            { maxOutputTokens: 1, thinkingBudget: 0 }
+          );
+          testedModel = 'claude-opus-4-6-thinking';
+        } else {
+          throw err55;
+        }
+      }
       hasOpus = true;
-      opusMessage = 'Conta confirmada com cota ativa de Claude Opus!';
+      opusMessage = `Conta confirmada com cota ativa de Claude Opus (${testedModel})!`;
     } catch (err) {
       hasOpus = null;
       const rawError = err.message || '';

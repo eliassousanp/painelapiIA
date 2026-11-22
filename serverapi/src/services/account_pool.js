@@ -383,17 +383,55 @@ class AntigravityAccountPool {
         if (attempt > 0) {
           await new Promise(r => setTimeout(r, 350 + Math.floor(Math.random() * 500)));
         }
-        const googleResp = await generateContent(
-          account.access_token,
-          account.project_id || 'aicode-consumers',
-          targetEngine,
-          contents,
-          systemInstruction,
-          customConfig,
-          account.email || String(account.id)
-        );
+
+        let engineToUse = targetEngine;
+        let altOpus = null;
+        if (targetEngine.includes('opus')) {
+          const qStr = typeof account.quotas_json === 'string' ? account.quotas_json : JSON.stringify(account.quotas_json || {});
+          if (qStr.includes('claude-opus-5.5')) {
+            engineToUse = 'claude-opus-5.5';
+            altOpus = 'claude-opus-4-6-thinking';
+          } else if (qStr.includes('claude-opus-4-6-thinking')) {
+            engineToUse = 'claude-opus-4-6-thinking';
+            altOpus = 'claude-opus-5.5';
+          } else {
+            engineToUse = 'claude-opus-5.5';
+            altOpus = 'claude-opus-4-6-thinking';
+          }
+        }
+
+        let googleResp;
+        try {
+          googleResp = await generateContent(
+            account.access_token,
+            account.project_id || 'aicode-consumers',
+            engineToUse,
+            contents,
+            systemInstruction,
+            customConfig,
+            account.email || String(account.id)
+          );
+        } catch (callErr) {
+          const callMsg = (callErr.message || '').toLowerCase();
+          if (altOpus && (callErr.status === 404 || callMsg.includes('not found') || callMsg.includes('deprecated') || callMsg.includes('no longer available'))) {
+            console.warn(`[Pool Opus Auto-Switch] Conta #${account.id} falhou em "${engineToUse}". Tentando variante alternativa "${altOpus}"...`);
+            engineToUse = altOpus;
+            googleResp = await generateContent(
+              account.access_token,
+              account.project_id || 'aicode-consumers',
+              engineToUse,
+              contents,
+              systemInstruction,
+              customConfig,
+              account.email || String(account.id)
+            );
+          } else {
+            throw callErr;
+          }
+        }
+
         this.releaseAccount(account.id);
-        return { googleResp, account, usedModel: targetEngine };
+        return { googleResp, account, usedModel: engineToUse };
       } catch (err) {
         if (account) {
           this.releaseAccount(account.id);
@@ -467,19 +505,59 @@ class AntigravityAccountPool {
         if (attempt > 0) {
           await new Promise(r => setTimeout(r, 350 + Math.floor(Math.random() * 500)));
         }
-        const streamRes = await streamGenerateContent(
-          account.access_token,
-          account.project_id || 'aicode-consumers',
-          targetEngine,
-          contents,
-          systemInstruction,
-          customConfig,
-          (...args)=>{if(args[0])emitted=true;onChunk?.(...args);},
-          abortSignal,
-          account.email || String(account.id)
-        );
+
+        let engineToUse = targetEngine;
+        let altOpus = null;
+        if (targetEngine.includes('opus')) {
+          const qStr = typeof account.quotas_json === 'string' ? account.quotas_json : JSON.stringify(account.quotas_json || {});
+          if (qStr.includes('claude-opus-5.5')) {
+            engineToUse = 'claude-opus-5.5';
+            altOpus = 'claude-opus-4-6-thinking';
+          } else if (qStr.includes('claude-opus-4-6-thinking')) {
+            engineToUse = 'claude-opus-4-6-thinking';
+            altOpus = 'claude-opus-5.5';
+          } else {
+            engineToUse = 'claude-opus-5.5';
+            altOpus = 'claude-opus-4-6-thinking';
+          }
+        }
+
+        let streamRes;
+        try {
+          streamRes = await streamGenerateContent(
+            account.access_token,
+            account.project_id || 'aicode-consumers',
+            engineToUse,
+            contents,
+            systemInstruction,
+            customConfig,
+            (...args)=>{if(args[0])emitted=true;onChunk?.(...args);},
+            abortSignal,
+            account.email || String(account.id)
+          );
+        } catch (streamErr) {
+          const streamMsg = (streamErr.message || '').toLowerCase();
+          if (!emitted && altOpus && (streamErr.status === 404 || streamMsg.includes('not found') || streamMsg.includes('deprecated') || streamMsg.includes('no longer available'))) {
+            console.warn(`[Pool Stream Opus Auto-Switch] Conta #${account.id} falhou em "${engineToUse}". Tentando variante alternativa "${altOpus}"...`);
+            engineToUse = altOpus;
+            streamRes = await streamGenerateContent(
+              account.access_token,
+              account.project_id || 'aicode-consumers',
+              engineToUse,
+              contents,
+              systemInstruction,
+              customConfig,
+              (...args)=>{if(args[0])emitted=true;onChunk?.(...args);},
+              abortSignal,
+              account.email || String(account.id)
+            );
+          } else {
+            throw streamErr;
+          }
+        }
+
         this.releaseAccount(account.id);
-        return { googleResp: streamRes, account, usedModel: targetEngine };
+        return { googleResp: streamRes, account, usedModel: engineToUse };
       } catch (err) {
         if (account) {
           this.releaseAccount(account.id);
