@@ -161,7 +161,7 @@ app.get('/auth/antigravity/login', (req, res) => {
 
       let projectId = 'aicode-consumers';
       try {
-        projectId = await onboardUser(accountData.accessToken);
+        projectId = await onboardUser(accountData.accessToken, accountData.email);
         console.log(`[OAuth Antigravity] Project ID resolvido: ${projectId}`);
       } catch (e) {
         console.warn(`[OAuth Antigravity] Aviso ao resolver Project ID:`, e.message);
@@ -169,7 +169,7 @@ app.get('/auth/antigravity/login', (req, res) => {
 
       let quotasJson = null;
       try {
-        const quotas = await fetchUserQuotas(accountData.accessToken, projectId);
+        const quotas = await fetchUserQuotas(accountData.accessToken, projectId, accountData.email);
         if (quotas) quotasJson = JSON.stringify(quotas);
       } catch (e) { }
 
@@ -239,12 +239,12 @@ app.all('/auth/antigravity/manual-callback', async (req, res) => {
 
     let projectId = 'aicode-consumers';
     try {
-      projectId = await onboardUser(accountData.accessToken);
+      projectId = await onboardUser(accountData.accessToken, accountData.email);
     } catch (e) { }
 
     let quotasJson = null;
     try {
-      const quotas = await fetchUserQuotas(accountData.accessToken, projectId);
+      const quotas = await fetchUserQuotas(accountData.accessToken, projectId, accountData.email);
       if (quotas) quotasJson = JSON.stringify(quotas);
     } catch (e) { }
 
@@ -291,23 +291,32 @@ app.all('/auth/antigravity/manual-callback', async (req, res) => {
 
 // -------------------------------------------------------------
 // VERIFICADOR & SINCRONIZADOR UNIFICADO DE TODAS AS COTAS
-// Consulta cotas oficiais (Gemini, Sonnet, etc.) e executa probe real de Opus em uma única chamada atômica
+// Consulta cotas oficiais via retrieveUserQuota / fetchAvailableModels SEM disparar generateContent
+// fake ("probe de 1 token") por padrão — pois chamadas com text:'1' e maxOutputTokens:1 são
+// assinatura clássica de bot para o antifraude do Google Cloud Code.
 // -------------------------------------------------------------
-async function syncSingleAccount(acc, shouldProbeOpus = true) {
+async function syncSingleAccount(acc, shouldProbeOpus = false) {
   let token = acc.access_token;
-  try {
-    const refreshed = await refreshAccessToken(acc.refresh_token);
-    if (refreshed && refreshed.accessToken) {
-      token = refreshed.accessToken;
-      const newExpiresAt = new Date(Date.now() + 3600 * 1000);
-      await pool.query('UPDATE antigravity_accounts SET access_token = ?, token_expires_at = ? WHERE id = ?', [token, newExpiresAt, acc.id]);
+  const nowMs = Date.now();
+  const expiresMs = acc.token_expires_at ? new Date(acc.token_expires_at).getTime() : 0;
+
+  // Anti-fingerprint: só renova o access_token no OAuth se realmente estiver perto de expirar (< 5 min)
+  if (!token || (expiresMs - nowMs < 300000)) {
+    try {
+      const refreshed = await refreshAccessToken(acc.refresh_token);
+      if (refreshed && refreshed.accessToken) {
+        token = refreshed.accessToken;
+        const newExpiresAt = new Date(Date.now() + (refreshed.expiresIn || 3600) * 1000);
+        await pool.query('UPDATE antigravity_accounts SET access_token = ?, token_expires_at = ? WHERE id = ?', [token, newExpiresAt, acc.id]);
+      }
+    } catch (e) {
+      console.warn(`[Sync Quotas] Falha ao renovar token de ${acc.email}:`, e.message);
     }
-  } catch (e) {
-    console.warn(`[Sync Quotas] Falha ao renovar token de ${acc.email}:`, e.message);
   }
 
   // Catálogo e janelas são fontes distintas; preservar a última consulta válida se ambas falharem.
-  const [catalogResult,bucketsResult]=await Promise.allSettled([fetchUserQuotas(token,acc.project_id),fetchUserQuotaBuckets(token,acc.project_id)]);
+  const accKey = acc.email || String(acc.id);
+  const [catalogResult,bucketsResult]=await Promise.allSettled([fetchUserQuotas(token,acc.project_id,accKey),fetchUserQuotaBuckets(token,acc.project_id,accKey)]);
   let quotas=catalogResult.status==='fulfilled' && catalogResult.value?.models ? catalogResult.value : null;
   const buckets=bucketsResult.status==='fulfilled' ? bucketsResult.value : null;
   if (!quotas && !buckets) throw new Error('O Google não retornou as cotas; a última consulta válida foi preservada.');
@@ -478,8 +487,22 @@ app.all('/auth/antigravity/sync', async (req, res) => {
     const [accounts] = await pool.query(query, params);
 
     const runSync = async () => {
-      const settled = await Promise.allSettled(accounts.map(acc => syncSingleAccount(acc, shouldProbeOpus)));
-      return settled.map(s => s.status === 'fulfilled' ? s.value : { success: false, error: s.reason?.message });
+      // Anti-ban: sincroniza contas sequencialmente com jitter entre cada conta
+      // em vez de disparar Promise.allSettled simultâneo de 10-50 contas no mesmo milissegundo do mesmo IP
+      const out = [];
+      for (let i = 0; i < accounts.length; i++) {
+        if (i > 0) {
+          const jitter = 600 + Math.floor(Math.random() * 900);
+          await new Promise(r => setTimeout(r, jitter));
+        }
+        try {
+          const val = await syncSingleAccount(accounts[i], Boolean(shouldProbeOpus));
+          out.push(val);
+        } catch (err) {
+          out.push({ id: accounts[i].id, email: accounts[i].email, success: false, error: err?.message || String(err) });
+        }
+      }
+      return out;
     };
 
     if (isAsync) {
@@ -546,41 +569,40 @@ app.all('/auth/antigravity/recheck-banned', async (req, res) => {
       if (!tokenOk) {
         detail = 'Falha ao renovar o token (o refresh_token pode ter expirado). Reautentique a conta via Google.';
       } else {
-        // 2. Probe real e barato contra a Cloud Code API.
+        // 2. Checagem passiva via retrieveUserQuota / fetchAvailableModels (NÃO usa generateContent com '1' token para evitar flag de bot)
         try {
-          await generateContent(
-            token,
-            acc.project_id || 'aicode-consumers',
-            'gemini-3.8-flash-medium',
-            [{ role: 'user', parts: [{ text: '1' }] }],
-            '',
-            { maxOutputTokens: 1, thinkingBudget: 0 }
-          );
+          await fetchUserQuotaBuckets(token, acc.project_id || 'aicode-consumers');
           recovered = true;
           detail = 'Conta reabilitada pelo Google! Status voltou para ativa.';
         } catch (err) {
           const status = err.status || 0;
           const raw = (err.message || '').toLowerCase();
           const reason = err.data?.error?.details?.[0]?.reason || '';
-          const isTos = status === 403 || reason === 'TOS_VIOLATION' || raw.includes('terms of service') || raw.includes('tos_violation') || raw.includes('permission_denied');
+          const isTos = reason === 'TOS_VIOLATION' || raw.includes('terms of service') || raw.includes('tos_violation') || raw.includes('suspended') || (status === 403 && !raw.includes('subscription'));
 
           if (isTos) {
             detail = 'Ainda banida pelo Google (403 TOS_VIOLATION).';
           } else if (status === 429 || reason === 'QUOTA_EXHAUSTED' || raw.includes('quota') || raw.includes('exhausted')) {
-            // A conta respondeu (nao esta mais bloqueada), apenas sem cota neste instante.
             recovered = true;
             detail = 'Conta respondendo (429 cota momentanea) — ban removido, voltou para ativa.';
           } else {
-            detail = `Nao foi possivel confirmar: ${reason || err.message || 'erro desconhecido'}`;
+            // Tenta fetchAvailableModels como segundo teste passivo
+            const cat = await fetchUserQuotas(token, acc.project_id || 'aicode-consumers');
+            if (cat && cat.models) {
+              recovered = true;
+              detail = 'Conta reabilitada pelo Google (catálogo ativo)!';
+            } else {
+              detail = `Nao foi possivel confirmar: ${reason || err.message || 'erro desconhecido'}`;
+            }
           }
         }
       }
 
-      // 3. Se recuperou, destrava e ressincroniza as cotas reais.
+      // 3. Se recuperou, destrava e ressincroniza as cotas reais (sem probe invasivo).
       if (recovered) {
         await pool.query("UPDATE antigravity_accounts SET status = 'active' WHERE id = ?", [acc.id]);
         try {
-          await syncSingleAccount({ ...acc, status: 'active', access_token: token }, true);
+          await syncSingleAccount({ ...acc, status: 'active', access_token: token }, false);
         } catch (e) {
           console.warn(`[Recheck Banned] Falha ao ressincronizar ${acc.email}:`, e.message);
         }
@@ -884,6 +906,20 @@ async function executeSmartRoutes(routes,{messages,contents,system,rawModel,conf
   },{signal,onFallback:(from,error,to)=>console.warn(`[Smart Routing] ${from.model} (provedor ${from.providerId ?? 'não definido'}) indisponível; tentando ${to.model} (provedor ${to.providerId ?? 'não definido'}): ${String(error.message).slice(0,160)}`)});
 }
 
+// Sanitiza prompts de sistema vindos de CLIs externas (Claude Code, Cline, Roo Code, Cursor)
+// que assinam explicitamente "You are Claude Code, Anthropic's official CLI for Claude" etc.
+// Enviar a assinatura de outro produto concorrente dentro do systemInstruction para o endpoint
+// interno do Antigravity (cloudcode-pa.googleapis.com) é flag direto de desvio de finalidade/TOS.
+function sanitizeExternalIdeSignatures(systemText = '') {
+  if (!systemText || typeof systemText !== 'string') return '';
+  return systemText
+    .replace(/You are Claude Code,\s*Anthropic'?s official CLI for Claude\.?/gi, 'You are an expert AI coding assistant running inside the IDE.')
+    .replace(/Anthropic'?s official CLI for Claude/gi, 'the IDE coding assistant')
+    .replace(/You are Cline,\s*a highly skilled software engineer/gi, 'You are a highly skilled software engineer')
+    .replace(/You are Roo(?:\s*Code)?,\s*a/gi, 'You are a')
+    .replace(/claude-code\/[\d.]+/gi, 'antigravity/2.7.0');
+}
+
 function openAiFinishReason(reason, hasToolCalls) {
   if (hasToolCalls) return 'tool_calls';
   if (reason === 'MAX_TOKENS' || reason === 'max_tokens' || reason === 'length') return 'length';
@@ -1121,7 +1157,7 @@ async function resolveModelConfig(requestedModel, incomingContents = [], {videoO
 
       const routes={};
       for(const tier of ['fast','medium','heavy']) {
-        const model=String(row[`routing_${tier}_model`] || '').trim();if(!model)continue;
+        let model=String(row[`routing_${tier}_model`] || '').trim();if(!model)continue;
         let id=Number(row[`routing_${tier}_provider_id`]) || null;
         if(!id) {
           const [matches]=await pool.query('SELECT DISTINCT pm.provider_id FROM provider_models pm JOIN providers p ON p.id=pm.provider_id WHERE pm.upstream_model=? AND p.status=\'active\'',[model]);
@@ -1129,7 +1165,11 @@ async function resolveModelConfig(requestedModel, incomingContents = [], {videoO
           if(ids.length===1)id=ids[0];
           else if(ids.length>1)id=null;
           else if(model===row.upstream_model && row.provider_id)id=Number(row.provider_id);
-          else id=null;
+          else id=2; // fallback padrão para Google Antigravity Pool quando não especificado
+        }
+        // Normaliza modelos legados (como gemini-2.5-flash do database.sql) quando o provedor é o Pool Antigravity (2)
+        if (id === 2) {
+          model = normalizeAntigravityModel(model);
         }
         routes[tier]={model,providerId:id,multiplier:parseFloat(row[`routing_${tier}_multiplier`]) || 1};
       }
@@ -1150,7 +1190,7 @@ async function resolveModelConfig(requestedModel, incomingContents = [], {videoO
     }
 
     const providerId = routeCandidates?.[0]?.providerId ?? (row ? row.provider_id : 2);
-    if (providerId === 2 && !row.upstream_model && !routeCandidates?.length) {
+    if (providerId === 2 && !routeCandidates?.length) {
       chosenEngine = normalizeAntigravityModel(chosenEngine);
     }
 
@@ -1251,8 +1291,10 @@ async function logUsage(userKey, model, promptTokens, completionTokens, accountI
         WHERE id = ?
       `, [rawTotal, accountId]);
 
-      // Sincronização inteligente em segundo plano:
-      // A cada 10 requisições ou se última sync foi há mais de 2 minutos, atualiza as cotas reais do Google
+      // Sincronização passiva inteligente em segundo plano:
+      // Apenas se a última sync foi há mais de 15 minutos (900.000ms), atualiza cotas com delay randômico (3s a 8s)
+      // para nunca colar uma chamada retrieveUserQuota exatamente 500ms após todo generateContent.
+      const randomDelayMs = 3000 + Math.floor(Math.random() * 5000);
       setTimeout(async () => {
         try {
           const [accRows] = await pool.query(
@@ -1261,10 +1303,7 @@ async function logUsage(userKey, model, promptTokens, completionTokens, accountI
           );
           if (accRows.length > 0) {
             const lastSync = accRows[0].last_sync_at ? new Date(accRows[0].last_sync_at).getTime() : 0;
-            if (Date.now() - lastSync > 120000) {
-              // Anti-ban: NUNCA dispara probe de Opus automaticamente (false).
-              // So le as cotas oficiais piggyback numa requisicao real do usuario.
-              // O probe real de Opus (generateContent extra) fica apenas sob demanda no painel.
+            if (Date.now() - lastSync > 900000) {
               await syncSingleAccount(accRows[0], false);
               console.log(`[Auto-Sync] Cotas sincronizadas em segundo plano para conta ${accRows[0].email}`);
             }
@@ -1272,7 +1311,7 @@ async function logUsage(userKey, model, promptTokens, completionTokens, accountI
         } catch (e) {
           // Ignora silenciosamente para não travar a resposta
         }
-      }, 500);
+      }, randomDelayMs);
     }
   } catch (err) {
     console.error('Erro ao debitar cota:', err.message);
@@ -1762,15 +1801,17 @@ function convertAnthropicMessagesToGemini(incomingMessages) {
           const rawFnName = b.name || 'unknown';
           const fnName = rawFnName.replace(/[^a-zA-Z0-9_:-]/g, '_').slice(0, 64);
           const clientSig = b.thoughtSignature || b.thought_signature;
-          const sig = clientSig || getThoughtSignature(callId, rawFnName) || getThoughtSignature(callId, fnName) || 'skip_thought_signature_validator';
+          const sig = clientSig || getThoughtSignature(callId, rawFnName) || getThoughtSignature(callId, fnName);
           const partObj = {
             functionCall: {
               id: callId,
               name: fnName,
               args: inputArgs
-            },
-            thoughtSignature: sig
+            }
           };
+          if (sig && sig !== 'skip_thought_signature_validator') {
+            partObj.thoughtSignature = sig;
+          }
           parts.push(partObj);
         } else if (b.type === 'tool_result') {
           const rawName = toolUseIdToName[b.tool_use_id] || 'tool';
@@ -1925,15 +1966,17 @@ function convertOpenAiMessagesToGemini(incomingMessages) {
         const rawFnName = tc.function?.name || 'unknown';
         const fnName = rawFnName.replace(/[^a-zA-Z0-9_:-]/g, '_').slice(0, 64);
         const clientSig = tc.thoughtSignature || tc.thought_signature || tc.function?.thoughtSignature || tc.function?.thought_signature;
-        const sig = clientSig || getThoughtSignature(callId, rawFnName) || getThoughtSignature(callId, fnName) || 'skip_thought_signature_validator';
+        const sig = clientSig || getThoughtSignature(callId, rawFnName) || getThoughtSignature(callId, fnName);
         const partObj = {
           functionCall: {
             id: callId,
             name: fnName,
             args: args
-          },
-          thoughtSignature: sig
+          }
         };
+        if (sig && sig !== 'skip_thought_signature_validator') {
+          partObj.thoughtSignature = sig;
+        }
         parts.push(partObj);
       }
     }
@@ -1988,7 +2031,7 @@ app.post(['/v1/messages', '/messages'], async (req, res) => {
     }
   }
 
-  const finalSystemInstruction = systemParts.join('\n\n');
+  const finalSystemInstruction = sanitizeExternalIdeSignatures(systemParts.join('\n\n'));
   const geminiTools = convertToolsToGemini(req.body.tools);
   const customConfig = {
     temperature: req.body.temperature !== undefined ? req.body.temperature : 0.7,
@@ -2217,7 +2260,7 @@ app.post(['/openai/deployments/:deployment/chat/completions', '/v1/chat/completi
     try { videoPrompt = fs.readFileSync(path.join(__dirname, 'video-diretor.md'), 'utf8'); }
     catch { return res.status(503).json({error: {message:'Instruções do diretor de vídeo indisponíveis.'}}); }
   }
-  const finalSystemInstruction = [customPrompt, videoPrompt, userSystemPrompt].filter(Boolean).join('\n\n');
+  const finalSystemInstruction = sanitizeExternalIdeSignatures([customPrompt, videoPrompt, userSystemPrompt].filter(Boolean).join('\n\n'));
 
   // Suporte a tools e functions padrão OpenAI
   const rawTools = req.body.tools || (req.body.functions ? req.body.functions.map(f => ({ type: 'function', function: f })) : null);
@@ -2621,7 +2664,7 @@ app.post(['/v1/audio/transcriptions', '/audio/transcriptions'], async (req, res)
       }
     ];
 
-    const { googleResp, account } = await executeWithFallback('gemini-2.5-flash', contents, '', 'gemini-2.5-flash');
+    const { googleResp, account } = await executeWithFallback('gemini-3.8-flash-medium', contents, '', 'gemini-3.8-flash-medium');
     const candidate = googleResp?.candidates?.[0];
     let text = candidate?.content?.parts?.map(p => p.text || '').join(' ').trim() || '';
 

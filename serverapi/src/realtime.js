@@ -477,10 +477,10 @@ async function handleAudioCommit(ws, session, gateway) {
     console.log(`[Realtime STT] Iniciando transcrição rápida (${Math.round(audioBase64ToSend.length / 1024)} KB)...`);
     const sttStart = Date.now();
     const { googleResp } = await gateway.executeWithFallback(
-      'gemini-2.5-flash',
+      'gemini-3.8-flash-medium',
       contents,
       '',
-      'gemini-2.5-flash',
+      'gemini-3.8-flash-medium',
       { temperature: 0.0, maxOutputTokens: 250 }
     );
     session.lastSttLatencyMs = Date.now() - sttStart;

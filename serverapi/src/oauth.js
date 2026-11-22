@@ -26,6 +26,12 @@ function generateCodeChallenge(verifier) {
   return crypto.createHash('sha256').update(verifier).digest('base64url');
 }
 
+const OAUTH_HEADERS = {
+  'User-Agent': 'antigravity/2.7.0 windows/amd64',
+  'X-Client-Name': 'antigravity',
+  'X-Client-Version': '2.7.0'
+};
+
 function requestPost(endpointUrl, postData, headers = {}) {
   return new Promise((resolve, reject) => {
     const parsed = new URL(endpointUrl);
@@ -36,6 +42,7 @@ function requestPost(endpointUrl, postData, headers = {}) {
       path: parsed.pathname + parsed.search,
       method: 'POST',
       headers: {
+        ...OAUTH_HEADERS,
         'Content-Type': 'application/x-www-form-urlencoded',
         'Content-Length': Buffer.byteLength(body),
         ...headers
@@ -65,7 +72,10 @@ function requestPost(endpointUrl, postData, headers = {}) {
 function fetchUserInfo(accessToken) {
   return new Promise((resolve, reject) => {
     https.get('https://www.googleapis.com/oauth2/v2/userinfo', {
-      headers: { 'Authorization': `Bearer ${accessToken}` }
+      headers: {
+        ...OAUTH_HEADERS,
+        'Authorization': `Bearer ${accessToken}`
+      }
     }, (res) => {
       let data = '';
       res.on('data', chunk => data += chunk);

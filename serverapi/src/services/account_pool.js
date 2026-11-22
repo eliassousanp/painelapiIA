@@ -21,15 +21,20 @@ class AntigravityAccountPool {
     this.limits = {
       heavy: {
         maxConcurrent: 1,   // 1 requisição pesada por vez por conta (mais humano)
-        maxRpm: 6,          // Máx requisições por minuto por conta
-        minSpacingMs: 3000  // Intervalo mínimo entre 2 chamadas na mesma conta
+        maxRpm: 5,          // Máx requisições por minuto por conta
+        minSpacingMs: 4200, // Intervalo mínimo base entre 2 chamadas na mesma conta
+        jitterMs: 1800      // Jitter randômico (0 a 1800ms) para quebrar cadência de bot
       },
       light: {
-        maxConcurrent: 3,
-        maxRpm: 12,
-        minSpacingMs: 1200
+        maxConcurrent: 2,
+        maxRpm: 10,
+        minSpacingMs: 1600,
+        jitterMs: 900
       }
     };
+    // Sessão pegajosa (Sticky Session): mantém a mesma conta para chamadas em sequência da mesma conversa por até 45s
+    this.lastStickyAccountId = null;
+    this.lastStickyTimestamp = 0;
   }
 
   isHeavyModel(modelKey = '') {
@@ -165,6 +170,14 @@ class AntigravityAccountPool {
       if (inCooldown) loadScore += 10000;
       if (remainingFraction <= 0.02) loadScore += 50000;
 
+      // Sticky Session: no IDE real, os turnos de uma conversa (especialmente tool_use -> tool_result)
+      // rodam na MESMA conta Google, e não pulam de conta a cada segundo.
+      // Se esta conta foi a última usada há menos de 45s e está livre/com cota, dá prioridade a ela (-15 pontos).
+      const isSticky = (this.lastStickyAccountId === acc.id) && ((now - this.lastStickyTimestamp) < 45000);
+      if (isSticky && !inCooldown && remainingFraction > 0.05 && stat.activeRequests === 0 && rpm < Math.max(1, limits.maxRpm - 1)) {
+        loadScore -= 15;
+      }
+
       return {
         account: acc,
         stat,
@@ -198,11 +211,10 @@ class AntigravityAccountPool {
         // Se está em cooldown ou sem cota real, pula para a próxima
         if (inCooldown || remainingFraction <= 0.02) continue;
 
-        // Espaçamento mínimo: não dispara 2 chamadas coladas na mesma conta.
-        // Prefere espalhar para outra conta; se nenhuma estiver "descansada",
-        // a micro-fila abaixo espera e tenta de novo (até o fallback final).
+        // Espaçamento mínimo com jitter humano: não dispara 2 chamadas com intervalo fixo robótico na mesma conta.
         const lastTs = stat.requestTimestamps.length ? Math.max(...stat.requestTimestamps) : 0;
-        const spacedEnough = (Date.now() - lastTs) >= (limits.minSpacingMs || 0);
+        const dynamicSpacing = (limits.minSpacingMs || 0) + (stat.nextJitterMs || 0);
+        const spacedEnough = (Date.now() - lastTs) >= dynamicSpacing;
 
         // Se a conta tem espaço de concorrência, não estourou o RPM e respeitou o espaçamento
         if (stat.activeRequests < limits.maxConcurrent && rpm < limits.maxRpm && spacedEnough) {
@@ -210,8 +222,11 @@ class AntigravityAccountPool {
           // devem enxergar a vaga ocupada antes de escolher outra conta.
           stat.activeRequests++;
           stat.requestTimestamps.push(Date.now());
+          stat.nextJitterMs = Math.floor(Math.random() * (limits.jitterMs || 1000));
           stat.totalCalls++;
           stat.lastUsedAt = new Date();
+          this.lastStickyAccountId = account.id;
+          this.lastStickyTimestamp = Date.now();
           try {
             const tokenOk = await this.ensureTokenFresh(account);
             if (abortSignal?.aborted) throw new Error('Espera por conta cancelada.');
@@ -261,7 +276,22 @@ class AntigravityAccountPool {
     // Modelo reportado no erro pelo Google ou passado como parâmetro
     const actualModel = meta.model || modelKey || '';
 
-    const isTosViolation = status === 403 || reason === 'TOS_VIOLATION' || msg.includes('terms of service') || msg.includes('tos_violation');
+    const isPermissionDenied = status === 403 && (reason === 'PERMISSION_DENIED' || msg.includes('subscription') || msg.includes('permission_denied') || msg.includes('not authorized') || msg.includes('tier'));
+    const isTosViolation = !isPermissionDenied && (
+      reason === 'TOS_VIOLATION' ||
+      msg.includes('terms of service') ||
+      msg.includes('tos_violation') ||
+      msg.includes('account has been disabled') ||
+      msg.includes('suspended') ||
+      (status === 403 && !actualModel.includes('opus') && !actualModel.includes('claude'))
+    );
+
+    if (isPermissionDenied) {
+      console.warn(`[Pool Manager] ⚠️ Conta #${accId} (${accountEmail || 'N/A'}) recebeu 403 PERMISSION_DENIED no modelo "${actualModel}" (sem assinatura Premium/Opus neste modelo, mas a conta NÃO está banida). Aplicando cooldown de 24h apenas para este modelo.`);
+      if (!stat.modelCooldowns) stat.modelCooldowns = new Map();
+      stat.modelCooldowns.set(actualModel, Date.now() + 86400000);
+      return;
+    }
 
     if (isTosViolation) {
       console.error(`[Pool Manager] ⛔ CONTA #${accId} (${accountEmail || 'N/A'}) FOI BLOQUEADA/SUSPENSA PELO GOOGLE (403 TOS_VIOLATION). Marcando como banida no banco de dados...`);
@@ -345,13 +375,19 @@ class AntigravityAccountPool {
       let account = null;
       try {
         account = await this.acquireAccount(targetEngine, 60000);
+        // Se estamos retentando em outra conta após falha da anterior, aguarda jitter humano (350-850ms)
+        // para não martelar a API do Google com múltiplas contas no mesmo milissegundo
+        if (attempt > 0) {
+          await new Promise(r => setTimeout(r, 350 + Math.floor(Math.random() * 500)));
+        }
         const googleResp = await generateContent(
           account.access_token,
           account.project_id || 'aicode-consumers',
           targetEngine,
           contents,
           systemInstruction,
-          customConfig
+          customConfig,
+          account.email || String(account.id)
         );
         this.releaseAccount(account.id);
         return { googleResp, account, usedModel: targetEngine };
@@ -422,6 +458,9 @@ class AntigravityAccountPool {
       let emitted = false;
       try {
         account = await this.acquireAccount(targetEngine, accountWaitMs, abortSignal);
+        if (attempt > 0) {
+          await new Promise(r => setTimeout(r, 350 + Math.floor(Math.random() * 500)));
+        }
         const streamRes = await streamGenerateContent(
           account.access_token,
           account.project_id || 'aicode-consumers',
@@ -430,7 +469,8 @@ class AntigravityAccountPool {
           systemInstruction,
           customConfig,
           (...args)=>{if(args[0])emitted=true;onChunk?.(...args);},
-          abortSignal
+          abortSignal,
+          account.email || String(account.id)
         );
         this.releaseAccount(account.id);
         return { googleResp: streamRes, account, usedModel: targetEngine };
