@@ -240,7 +240,6 @@ export async function fetchUserQuotaBuckets(accessToken, projectId, accountKey =
 export async function generateContent(accessToken, projectId, model, contents, systemInstruction, customConfig = null, accountKey = '') {
   const finalProject = projectId || 'aicode-consumers';
   const targetModel = model;
-  const fp = getAccountFingerprint(accessToken, accountKey);
 
   const generationConfig = {
     temperature: customConfig?.temperature !== undefined ? customConfig.temperature : 0.7,
@@ -258,10 +257,6 @@ export async function generateContent(accessToken, projectId, model, contents, s
   const payload = {
     project: finalProject,
     model: targetModel,
-    metadata: {
-      ...CLIENT_METADATA,
-      sessionId: fp.sessionId
-    },
     request: {
       contents: sanitizeContentsForAntigravity(contents),
       generationConfig: generationConfig
@@ -293,7 +288,6 @@ export function streamGenerateContent(accessToken, projectId, model, contents, s
   return new Promise((resolve, reject) => {
     const finalProject = projectId || 'aicode-consumers';
     const targetModel = model;
-    const fp = getAccountFingerprint(accessToken, accountKey);
 
     const generationConfig = {
       temperature: customConfig?.temperature !== undefined ? customConfig.temperature : 0.7,
@@ -311,10 +305,6 @@ export function streamGenerateContent(accessToken, projectId, model, contents, s
     const payload = {
       project: finalProject,
       model: targetModel,
-      metadata: {
-        ...CLIENT_METADATA,
-        sessionId: fp.sessionId
-      },
       request: {
         contents: sanitizeContentsForAntigravity(contents),
         generationConfig: generationConfig
