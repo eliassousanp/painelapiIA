@@ -2527,13 +2527,23 @@ app.post(['/openai/deployments/:deployment/chat/completions', '/v1/chat/completi
     if (rawTools && rawTools.length > 0) {
       console.error(`[OpenAI Debug] Total tools recebidos: ${rawTools.length}`);
     }
+    const isQuotaError = (err.message || '').toLowerCase().includes('cota esgotada') || (err.message || '').toLowerCase().includes('quota');
+    let clientMessage = err.message || 'Erro ao processar requisição.';
+    // Mascara qualquer detalhe técnico de upstream/provedor interno (CloudCode, Google, Antigravity, nomes reais de modelos de backend)
+    if (!isVideo && /cloudcode|antigravity|upstream|claude-|gemini-|gpt-oss|aicode-consumers|404 not found/i.test(clientMessage)) {
+      clientMessage = isQuotaError ? 'Limite de requisições temporariamente excedido. Tente novamente em instantes.' : 'O modelo está temporariamente indisponível. Tente novamente em instantes.';
+    }
+
     if (res.headersSent) {
-      if (!res.writableEnded && !res.destroyed) {res.write(`data: ${JSON.stringify({error:{message:err.message || 'Erro ao processar requisição.',type:'api_error',...(isVideo ? {code:err.code,partial_output:!!(err.partialOutput || emittedVideoOutput)} : {})}})}\n\n`);res.write('data: [DONE]\n\n');res.end();}
+      if (!res.writableEnded && !res.destroyed) {
+        res.write(`data: ${JSON.stringify({error:{message:clientMessage,type:isQuotaError ? 'rate_limit_error' : 'api_error',...(isVideo ? {code:err.code,partial_output:!!(err.partialOutput || emittedVideoOutput)} : {})}})}\n\n`);
+        res.write('data: [DONE]\n\n');
+        res.end();
+      }
       return;
     }
-    const isQuotaError = (err.message || '').toLowerCase().includes('cota esgotada');
     res.status(isQuotaError ? 429 : 500).json({
-      error: { message: err.message || 'Erro ao processar requisição.', type: isQuotaError ? 'rate_limit_error' : 'api_error' }
+      error: { message: clientMessage, type: isQuotaError ? 'rate_limit_error' : 'api_error' }
     });
   }
 });
